@@ -1,0 +1,25 @@
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  DeterminateCI:
+    uses: DeterminateSystems/ci/.github/workflows/workflow.yml@main
+    permissions:
+      id-token: "write"
+      contents: "read"
+    with:
+      visibility: public
+      runner-map: |
+        {
+          "aarch64-darwin": "namespace-profile-mac-m2-12c28g",
+          "aarch64-linux": "UbuntuLatest32Cores128GArm",
+          "x86_64-linux": "UbuntuLatest32Cores128G"
+        }
