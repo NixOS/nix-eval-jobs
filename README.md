@@ -139,13 +139,13 @@ $ nix-eval-jobs --force-recurse pkgs/top-level/release.nix
 
 ### nix-eval-jobs consumes too much memory / is too slow
 
-By default, nix-eval-jobs spawns as many worker processes as there are hardware
-threads in the system and limits the memory usage for each worker to 4GB.
+By default, nix-eval-jobs spawns one worker process and limits the memory usage
+for each worker to 4GB.
 
-However, keep in mind that each worker process may need to re-evaluate shared
-dependencies of the attributes, which can introduce some overhead for each
-evaluation or cause workers to exceed their memory limit. If you encounter these
-situations, you can tune the following options:
+When using multiple workers, keep in mind that each worker process may need to
+re-evaluate shared dependencies of the attributes, which can introduce some
+overhead for each evaluation or cause workers to exceed their memory limit. You
+can tune the following options:
 
 `--workers`: This option allows you to set the number of evaluation workers that
 nix-eval-jobs should spawn. You can increase or decrease this number to optimize
