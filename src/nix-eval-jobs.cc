@@ -547,6 +547,15 @@ auto main(int argc, char **argv) -> int {
 
         nix::Sync<State> state_;
 
+        /* Pre-initialize the eval store (if specified) before spawning
+           workers so that the SQLite database and schema are created
+           exactly once.  Without this, forked workers race to create
+           a fresh store and hit SQLite "busy" / "schema is corrupt"
+           errors.  See https://github.com/NixOS/nix-eval-jobs/issues/401 */
+        if (myArgs.evalStoreUrl.has_value()) {
+            nix_eval_jobs::openStore(myArgs.evalStoreUrl);
+        }
+
         /* Start a collector thread per worker process. */
         std::vector<Thread> threads;
         std::condition_variable wakeup;
