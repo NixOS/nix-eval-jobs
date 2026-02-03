@@ -19,6 +19,7 @@
 // NOLINTEND(modernize-deprecated-headers)
 #include <exception>
 #include <filesystem>
+#include <typeinfo>
 #include <nix/expr/attr-set.hh>
 #include <nix/cmd/common-eval-args.hh>
 #include <nix/util/error.hh>
@@ -50,6 +51,7 @@
 #include "buffered-io.hh"
 #include "eval-args.hh"
 #include "store.hh"
+#include "warning-capture.hh"
 
 namespace nix {
 struct Expr;
@@ -313,7 +315,9 @@ auto shouldRestart(const MyArgs &args) -> bool {
 
 auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
                        nix::AutoCloseFD &toParent, nix::Bindings &autoArgs,
-                       nix::Value *vRoot, MyArgs &args) -> bool {
+                       nix::Value *vRoot, MyArgs &args,
+                       nix_eval_jobs::WarningCapturingLogger *warningLogger)
+    -> bool {
     /* Wait for the collector to send us a job name. */
     if (tryWriteLine(toParent.get(), "next") < 0) {
         return false; // main process died
@@ -337,6 +341,11 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
     nlohmann::json reply =
         nlohmann::json{{"attr", attrPathS}, {"attrPath", path}};
 
+    // Clear any warnings from previous evaluation
+    if (warningLogger != nullptr) {
+        warningLogger->takeWarnings();
+    }
+
     try {
         auto *vTmp =
             nix::findAlongAttrPath(state, attrPathS, autoArgs, *vRoot).first;
@@ -350,8 +359,17 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
             // We ignore everything that cannot be built
             reply["attrs"] = nlohmann::json::array();
         }
-    } catch (nix::EvalError &e) {
+    } catch (nix::Error &e) {
         const auto &err = e.info();
+
+        // When abort-on-warn is set, EvalBaseError is thrown (not a subclass).
+        // Only attach traces in this case, not for unrelated errors like
+        // ThrownError.
+        if (warningLogger != nullptr &&
+            typeid(e) == typeid(nix::EvalBaseError)) {
+            warningLogger->attachTracesToLastWarning(err);
+        }
+
         std::ostringstream oss;
         nix::showErrorInfo(oss, err, nix::loggerSettings.showTrace.get());
         auto msg = oss.str();
@@ -361,11 +379,18 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
         // Print to STDERR for Hydra UI
         std::cerr << msg << "\n";
     } catch (const std::exception &e) {
-        // FIXME: for some reason the catch block above doesn't trigger on macOS
-        // (?)
+        // Fallback for non-nix exceptions
         const auto *msg = e.what();
         reply["error"] = nix::filterANSIEscapes(msg, true);
         std::cerr << msg << '\n';
+    }
+
+    // Capture any warnings that were emitted during evaluation
+    if (warningLogger != nullptr) {
+        auto warnings = warningLogger->takeWarnings();
+        if (!warnings.empty()) {
+            reply["warnings"] = std::move(warnings);
+        }
     }
 
     if (tryWriteLine(toParent.get(), reply.dump()) < 0) {
@@ -383,6 +408,9 @@ void worker(
     nix::AutoCloseFD &toParent, // NOLINT(bugprone-easily-swappable-parameters)
     nix::AutoCloseFD &fromParent) {
 
+    // Install warning-capturing logger to collect evaluation warnings
+    auto *warningLogger = nix_eval_jobs::installWarningCapturingLogger();
+
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
     auto state = nix::make_ref<nix::EvalState>(
         args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings);
@@ -393,7 +421,7 @@ void worker(
     LineReader fromReader(fromParent.release());
 
     while (processJobRequest(*state, fromReader, toParent, autoArgs, vRoot,
-                             args)) {
+                             args, warningLogger)) {
         // Continue processing jobs until we need to exit
     }
 

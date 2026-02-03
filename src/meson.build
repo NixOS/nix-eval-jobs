@@ -5,6 +5,7 @@ src = [
   'buffered-io.cc',
   'constituents.cc',
   'worker.cc',
+  'warning-capture.cc',
   'strings-portable.cc',
   'output-stream-lock.cc',
   'daemon-settings.cc'

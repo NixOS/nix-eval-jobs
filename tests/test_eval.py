@@ -526,6 +526,139 @@ def test_recursion_error() -> None:
         assert any(err in res.stderr for err in expected_errors)
 
 
+def test_eval_warnings() -> None:
+    """Test that evaluation warnings are captured in the JSON output"""
+    with TemporaryDirectory() as tempdir:
+        cmd = [
+            str(BIN),
+            "--gc-roots-dir",
+            tempdir,
+            "--meta",
+            "--workers",
+            "1",
+            *COMMON_FLAGS,
+            "--flake",
+            ".#legacyPackages.x86_64-linux.warningPkgs",
+        ]
+        res = subprocess.run(
+            cmd,
+            cwd=TEST_ROOT.joinpath("assets"),
+            text=True,
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        print(res.stdout)
+        results = [json.loads(r) for r in res.stdout.split("\n") if r]
+
+        # Should have 3 packages (2 successful + 1 with error)
+        assert len(results) == 3
+
+        # Find the result with a single warning
+        single_warning = next(r for r in results if r["name"] == "package-with-warning")
+        assert "warnings" in single_warning
+        assert len(single_warning["warnings"]) == 1
+        warning = single_warning["warnings"][0]
+        assert "this is a test warning" in warning["msg"]
+
+        # Find the result with multiple warnings
+        multi_warning = next(r for r in results if r["name"] == "package-with-multiple-warnings")
+        assert "warnings" in multi_warning
+        assert len(multi_warning["warnings"]) == 2
+        warning_msgs = [w["msg"] for w in multi_warning["warnings"]]
+        assert any("first warning" in msg for msg in warning_msgs)
+        assert any("second warning" in msg for msg in warning_msgs)
+
+
+def test_eval_warnings_with_traces() -> None:
+    """Test warning trace behavior with and without abort-on-warn.
+
+    - Without abort-on-warn + ThrownError: traces are NOT attached
+    - With abort-on-warn: traces ARE attached (abort happens before throw)
+    """
+    with TemporaryDirectory() as tempdir:
+        cmd = [
+            str(BIN),
+            "--gc-roots-dir",
+            tempdir,
+            "--meta",
+            "--workers",
+            "1",
+            "--option",
+            "abort-on-warn",
+            "true",
+            *COMMON_FLAGS,
+            "--flake",
+            ".#legacyPackages.x86_64-linux.warningPkgs",
+        ]
+        res = subprocess.run(
+            cmd,
+            cwd=TEST_ROOT.joinpath("assets"),
+            text=True,
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        results = [json.loads(r) for r in res.stdout.split("\n") if r]
+        assert len(results) == 3
+
+        # packageWithWarning: abort-on-warn triggers, trace SHOULD be attached
+        single_warning = next(r for r in results if r["attr"] == "packageWithWarning")
+        assert "error" in single_warning
+        assert "abort-on-warn" in single_warning["error"]
+        assert "warnings" in single_warning
+        warning = single_warning["warnings"][0]
+        assert "this is a test warning" in warning["msg"]
+        assert "trace" in warning
+        trace = warning["trace"][0]
+        assert trace["line"] == 25
+        assert "flake.nix" in trace["file"]
+
+        # warningThenError with abort-on-warn: abort happens at warning BEFORE throw
+        # so the error is from abort-on-warn, not ThrownError
+        warning_error = next(r for r in results if r["attr"] == "warningThenError")
+        assert "error" in warning_error
+        assert "abort-on-warn" in warning_error["error"]
+        assert "warnings" in warning_error
+        warning = warning_error["warnings"][0]
+        assert "warning before error" in warning["msg"]
+        # Trace IS present because abort-on-warn triggered before throw
+        assert "trace" in warning
+        assert warning["trace"][0]["line"] == 47
+
+
+def test_eval_warnings_no_trace_on_unrelated_error() -> None:
+    """Test that traces from unrelated errors are NOT attached to warnings."""
+    with TemporaryDirectory() as tempdir:
+        cmd = [
+            str(BIN),
+            "--gc-roots-dir",
+            tempdir,
+            "--meta",
+            "--workers",
+            "1",
+            *COMMON_FLAGS,
+            "--flake",
+            ".#legacyPackages.x86_64-linux.warningPkgs",
+        ]
+        res = subprocess.run(
+            cmd,
+            cwd=TEST_ROOT.joinpath("assets"),
+            text=True,
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+        results = [json.loads(r) for r in res.stdout.split("\n") if r]
+        assert len(results) == 3
+
+        warning_error = next(r for r in results if r["attr"] == "warningThenError")
+        assert "error" in warning_error
+        assert "unrelated error after warning" in warning_error["error"]
+        assert "warnings" in warning_error
+        warning = warning_error["warnings"][0]
+        assert "warning before error" in warning["msg"]
+        # Trace should NOT be present - it's from ThrownError, not abort-on-warn
+        assert "trace" not in warning
+
+
 def test_no_instantiate_mode() -> None:
     """Test that --no-instantiate flag works correctly"""
     with TemporaryDirectory() as tempdir:
