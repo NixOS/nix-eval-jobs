@@ -1,6 +1,7 @@
 
 #include <cstdlib>
 #include <nix/util/args.hh>
+#include <nix/util/error.hh>
 #include <nix/util/file-system.hh>
 #include <nix/flake/flake.hh>
 #include <nix/flake/lockfile.hh>
@@ -13,11 +14,12 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "eval-args.hh"
 #include "output-stream-lock.hh"
-#include <optional>
 
 MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
     addFlag({
@@ -263,8 +265,13 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
                         const std::string &flakeRef) -> void {
             // overriden inputs are unlocked
             lockFlags.allowUnlocked = true;
+            auto path = nix::flake::NonEmptyInputAttrPath::parse(inputPath);
+            if (!path) {
+                throw nix::UsageError(
+                    "--override-input requires a non-empty input path");
+            }
             lockFlags.inputOverrides.insert_or_assign(
-                nix::flake::parseInputAttrPath(inputPath),
+                std::move(*path),
                 nix::parseFlakeRef(nix::fetchSettings, flakeRef,
                                    nix::absPath(std::filesystem::path(".")),
                                    true));
