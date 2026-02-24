@@ -20,6 +20,32 @@
       hydraJobs = import ./ci.nix { inherit system; };
 
       legacyPackages.x86_64-linux = {
+        warningPkgs = {
+          # Test package that emits a warning during evaluation
+          packageWithWarning = builtins.warn "this is a test warning" (derivation {
+            name = "package-with-warning";
+            inherit system;
+            builder = "/bin/sh";
+            args = [
+              "-c"
+              "echo 'content' > $out"
+            ];
+          });
+          # Package with multiple warnings
+          packageWithMultipleWarnings = builtins.warn "first warning" (
+            builtins.warn "second warning" (derivation {
+              name = "package-with-multiple-warnings";
+              inherit system;
+              builder = "/bin/sh";
+              args = [
+                "-c"
+                "echo 'content' > $out"
+              ];
+            })
+          );
+          # Package with warning followed by unrelated error
+          warningThenError = builtins.warn "warning before error" (throw "unrelated error after warning");
+        };
         emptyNeeded = rec {
           # This is a reproducer for issue #369 where neededBuilds and neededSubstitutes are empty
           # when they should contain values
