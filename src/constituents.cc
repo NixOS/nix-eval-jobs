@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <fnmatch.h>
 #include <cassert>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -132,14 +133,30 @@ auto rewriteDerivation(nlohmann::json &job, nix::Derivation &drv,
     drvName.resize(drvName.size() - nix::drvExtension.size());
 
     auto hashModulo = hashDerivationModulo(*store, drv, true);
-    if (hashModulo.kind != nix::DrvHash::Kind::Regular) {
+
+    auto outHash = std::visit(
+        nix::overloaded{
+            [](nix::DrvHashModulo::DrvHash &hash) -> std::optional<nix::Hash> {
+                return hash;
+            },
+            [](nix::DrvHashModulo::CaOutputHashes &hashes)
+                -> std::optional<nix::Hash> {
+                if (!hashes.contains("out")) {
+                    return std::nullopt;
+                }
+                return hashes.at("out");
+            },
+            [](nix::DrvHashModulo::DeferredDrv &) -> std::optional<nix::Hash> {
+                return std::nullopt;
+            },
+        },
+        hashModulo.raw);
+
+    if (!outHash.has_value()) {
         return false;
     }
-    auto hashIter = hashModulo.hashes.find("out");
-    if (hashIter == hashModulo.hashes.end()) {
-        return false;
-    }
-    auto outPath = store->makeOutputPath("out", hashIter->second, drvName);
+
+    auto outPath = store->makeOutputPath("out", outHash.value(), drvName);
     drv.env["out"] = store->printStorePath(outPath);
     drv.outputs.insert_or_assign(
         "out", nix::DerivationOutput::InputAddressed{.path = outPath});

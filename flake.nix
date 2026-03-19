@@ -3,7 +3,7 @@
 
   inputs.nixpkgs.url = "https://nixos.org/channels/nixpkgs-unstable/nixexprs.tar.xz";
   inputs.nix = {
-    url = "github:NixOS/nix/2.34-maintenance";
+    url = "github:NixOS/nix/master";
     # We want to control the deps precisely
     flake = false;
   };
