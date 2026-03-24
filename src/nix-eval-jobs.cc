@@ -569,6 +569,20 @@ auto main(int argc, char **argv) -> int {
             nix_eval_jobs::openStore(myArgs.evalStoreUrl);
         }
 
+        /* Pre-warm the store by loading the root expression (flake
+           or file, with --select applied) in the main process.
+           This forces builtins.path / builtins.fetchTarball results
+           into the store so forked workers find them already cached
+           instead of each redundantly copying large source trees. */
+        {
+            auto evalStore = nix_eval_jobs::openStore(myArgs.evalStoreUrl);
+            auto warmState = nix::make_ref<nix::EvalState>(
+                myArgs.lookupPath, evalStore,
+                nix::fetchSettings, nix::evalSettings);
+            nix::Bindings &autoArgs = *myArgs.getAutoArgs(*warmState);
+            initializeRootValue(warmState, autoArgs, myArgs);
+        }
+
         /* Start a collector thread per worker process. */
         std::vector<Thread> threads;
         std::condition_variable wakeup;

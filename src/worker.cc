@@ -279,6 +279,8 @@ auto processDerivation(nix::EvalState &state, nix::Value *value,
     return Response::Job{std::move(drv), std::move(extraValue)};
 }
 
+} // namespace
+
 auto initializeRootValue(const nix::ref<nix::EvalState> &state,
                          nix::Bindings &autoArgs, MyArgs &args)
     -> nix::Value * {
@@ -306,6 +308,7 @@ auto initializeRootValue(const nix::ref<nix::EvalState> &state,
     return vSelected;
 }
 
+namespace {
 auto shouldRestart(const MyArgs &args) -> bool {
     struct rusage resourceUsage = {}; // NOLINT(misc-include-cleaner)
     getrusage(RUSAGE_SELF, &resourceUsage);
