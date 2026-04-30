@@ -113,15 +113,51 @@ auto queryCacheStatus(
     std::vector<nix::StorePath> &unknownPaths, const nix::Derivation &drv)
     -> Drv::CacheStatus {
 
+    // queryMissing's per-input traversal flags an FOD as willBuild whenever a
+    // build-time-only input is missing from substituters, even though `nix
+    // build` would just download the FOD's own output. Short-circuit when
+    // every output is already obtainable; fall through otherwise so the
+    // queryMissing breakdown still populates neededBuilds for cross-system
+    // jobs (issue #369).
+    nix::StorePathCAMap toQuery;
+    bool allOutputsKnown = true;
+    for (auto const &[_, val] : outputs) {
+        if (!val) {
+            allOutputsKnown = false;
+            break;
+        }
+        if (!store.isValidPath(*val)) {
+            toQuery.insert({*val, std::nullopt});
+        }
+    }
+    if (allOutputsKnown) {
+        nix::SubstitutablePathInfos infos;
+        if (!toQuery.empty()) {
+            store.querySubstitutablePathInfos(toQuery, infos);
+        }
+        if (infos.size() == toQuery.size()) {
+            for (auto const &[p, _] : infos) {
+                neededSubstitutes.push_back(p);
+            }
+            std::ranges::sort(
+                neededSubstitutes,
+                [](const nix::StorePath &a, const nix::StorePath &b) {
+                    return a.name() != b.name() ? a.name() < b.name()
+                                                : a.to_string() < b.to_string();
+                });
+            return infos.empty() ? Drv::CacheStatus::Local
+                                 : Drv::CacheStatus::Cached;
+        }
+    }
+
     std::vector<nix::StorePathWithOutputs> paths;
-    // Add output paths
     for (auto const &[key, val] : outputs) {
         if (val) {
             paths.push_back(nix::StorePathWithOutputs{*val, {}});
         }
     }
-
-    // Add input derivation paths
+    // Input drvs go in too so neededBuilds is populated for cross-system jobs
+    // whose own output paths are unknown (issue #369).
     for (const auto &[inputDrvPath, inputNode] : drv.inputDrvs.map) {
         paths.push_back(
             nix::StorePathWithOutputs(inputDrvPath, inputNode.value));
