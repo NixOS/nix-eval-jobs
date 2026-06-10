@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -686,6 +687,15 @@ def _http_server(directory: Path):
 
 
 @pytest.mark.skipif(shutil.which("nix") is None, reason="requires nix CLI")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "needs a real nested `nix build`; on macOS Nix still configures a "
+        "sandbox-exec profile even with sandbox=false, which cannot be nested "
+        "inside the functional-tests build sandbox "
+        "(sandbox initialization failed: Operation not permitted)"
+    ),
+)
 @pytest.mark.parametrize("scheme", ["file", "http"])
 def test_fod_with_uncached_input_issue413(tmp_path: Path, scheme: str) -> None:
     """An FOD whose output is in a substituter must report cacheStatus=cached,
