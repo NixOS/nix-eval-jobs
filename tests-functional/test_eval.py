@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import base64
 import contextlib
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -681,6 +683,59 @@ def _http_server(directory: Path):
     finally:
         server.shutdown()
         thread.join()
+
+
+def test_cache_status_does_not_break_fetchers_after_fork(tmp_path: Path) -> None:
+    """The cache resolver must not initialise Nix's global HTTP transport
+    before evaluator workers fork. The transport's thread does not survive the
+    fork, so a fetcher evaluated in the child would otherwise hang forever.
+    """
+    env = _hermetic_nix_env(tmp_path)
+    served = tmp_path / "served"
+    served.mkdir()
+    source = b"fetched by an evaluator worker\n"
+    served.joinpath("source").write_bytes(source)
+    served.joinpath("nix-cache-info").write_text(
+        f"StoreDir: {env['NIX_STORE_DIR']}\nWantMassQuery: 1\nPriority: 40\n"
+    )
+    digest = base64.b64encode(hashlib.sha256(source).digest()).decode()
+
+    with _http_server(served) as url:
+        expression = f'''{{
+          job = derivation {{
+            name = "fork-fetch";
+            system = builtins.currentSystem;
+            builder = "/bin/sh";
+            src = builtins.fetchurl {{
+              url = "{url}/source";
+              sha256 = "sha256-{digest}";
+            }};
+          }};
+        }}'''
+        res = subprocess.run(
+            [
+                str(BIN),
+                "--workers",
+                "1",
+                "--check-cache-status",
+                "--option",
+                "substituters",
+                url,
+                "--option",
+                "require-sigs",
+                "false",
+                "--expr",
+                expression,
+            ],
+            env=env,
+            text=True,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+    job = json.loads(res.stdout)
+    assert job["attr"] == "job"
 
 
 @pytest.mark.skipif(shutil.which("nix") is None, reason="requires nix CLI")

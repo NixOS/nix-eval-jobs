@@ -6,6 +6,9 @@
 #include <map>
 #include <mutex>
 #include <nix/store/derivations.hh>
+#include <nix/store/filetransfer.hh>
+#include <nix/store/globals.hh>
+#include <nix/store/http-binary-cache-store.hh>
 #include <nix/store/path-info.hh>
 #include <nix/store/path.hh>
 #include <nix/store/store-api.hh>
@@ -13,6 +16,7 @@
 #include <nix/util/async.hh>
 #include <nix/util/callback.hh>
 #include <nix/util/error.hh>
+#include <nix/util/logging.hh>
 #include <nix/util/ref.hh>
 #include <nix/util/signals.hh>
 #include <nix/util/types.hh>
@@ -31,6 +35,45 @@ namespace asio = boost::asio;
 
 namespace {
 
+/* Opening an HTTP store normally uses Nix's process-global FileTransfer.
+   CacheStatusResolver is constructed before the evaluator workers fork, so
+   those children would inherit a FileTransfer whose worker thread no longer
+   exists.  Keep the resolver's HTTP transport private instead, leaving the
+   process-global transport uninitialised until a child needs it. */
+auto openSubstituters() -> std::list<nix::ref<nix::Store>> {
+    auto fileTransfer = nix::makeFileTransfer();
+    std::list<nix::ref<nix::Store>> stores;
+    std::set<nix::StoreReference> done;
+
+    for (const auto &storeReference :
+         nix::settings.getWorkerSettings().substituters.get()) {
+        if (!done.insert(storeReference).second) {
+            continue;
+        }
+        try {
+            auto config =
+                nix::resolveStoreConfig(nix::StoreReference{storeReference});
+            nix::ref<nix::Store> store = [&]() -> nix::ref<nix::Store> {
+                if (auto httpConfig = config.dynamic_pointer_cast<
+                                      nix::HttpBinaryCacheStoreConfig>()) {
+                    return nix::ref{httpConfig}->openStore(fileTransfer);
+                }
+                return config->openStore();
+            }();
+            store->init();
+            stores.push_back(std::move(store));
+        } catch (nix::Error &error) {
+            nix::logger->logEI(nix::lvlWarn, error.info());
+        }
+    }
+
+    stores.sort([](const nix::ref<nix::Store> &lhs,
+                   const nix::ref<nix::Store> &rhs) -> bool {
+        return lhs->config.priority < rhs->config.priority;
+    });
+    return stores;
+}
+
 /* Deterministic output order: by name, then full path (matches the
    previous queryMissing-based implementation). */
 void sortPaths(std::vector<nix::StorePath> &paths) {
@@ -45,7 +88,7 @@ void sortPaths(std::vector<nix::StorePath> &paths) {
 } // namespace
 
 CacheStatusResolver::CacheStatusResolver(nix::ref<nix::Store> store, Sink sink)
-    : store(std::move(store)), substituters(nix::getDefaultSubstituters()),
+    : store(std::move(store)), substituters(openSubstituters()),
       sink(std::move(sink)), workGuard(asio::make_work_guard(ctx)) {
     ioThread = std::thread([this]() -> void { ctx.run(); });
 }
