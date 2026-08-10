@@ -6,7 +6,6 @@ common_src = [
   'crash-handler.cc',
   'constituents.cc',
   'worker.cc',
-  'strings-portable.cc',
   'output-stream-lock.cc',
   'cache-status-resolver.cc',
   'daemon-settings.cc'

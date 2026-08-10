@@ -61,7 +61,6 @@
 #include "buffered-io.hh"
 #include "worker.hh"
 #include "response.hh"
-#include "strings-portable.hh"
 #include "output-stream-lock.hh"
 #include "constituents.hh"
 #include "daemon-settings.hh"
@@ -304,9 +303,9 @@ void handleBrokenWorkerPipe(Proc &proc, std::string_view msg) {
 
         if (result == -1) {
             kill(pid, SIGKILL);
-            throw nix::Error(
-                "BUG: while %s, waitpid for evaluation worker failed: %s", msg,
-                get_error_name(errno));
+            throw nix::SysError("BUG: while %s, waitpid for evaluation "
+                                "worker failed",
+                                msg);
         }
         if (WIFEXITED(status)) {
             if (WEXITSTATUS(status) == 1) {
