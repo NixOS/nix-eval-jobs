@@ -854,3 +854,48 @@ def test_fetchers_survive_worker_restart(tmp_path: Path) -> None:
 
     results = [json.loads(line) for line in res.stdout.splitlines() if line]
     assert len(results) == 2
+
+
+def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
+    """Workers fetching the same flake input concurrently spam "waiting
+    for another Nix process to finish fetching input" (issue #432)."""
+    env = _hermetic_nix_env(tmp_path)
+    repo = tmp_path / "flake"
+    repo.mkdir()
+    jobs = "\n".join(
+        f"""
+        job-{i} = derivation {{
+          name = "race-{i}";
+          system = "x86_64-linux";
+          builder = "/bin/sh";
+          args = [ "-c" "echo {i} > $out" ]; }};"""
+        for i in range(8)
+    )
+    repo.joinpath("flake.nix").write_text(f"{{ outputs = _: {{ hydraJobs = {{ {jobs} }}; }}; }}")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "add", "flake.nix"], cwd=repo, check=True, env=env)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=repo,
+        check=True,
+        env=env,
+    )
+
+    res = subprocess.run(
+        [
+            str(BIN),
+            "--gc-roots-dir",
+            str(tmp_path / "gc"),
+            "--workers",
+            "8",
+            *COMMON_FLAGS,
+            "--flake",
+            f"git+file://{repo}#hydraJobs",
+        ],
+        env=env,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+    assert len(res.stdout.splitlines()) == 8
+    assert "waiting for another Nix process" not in res.stderr, res.stderr

@@ -141,6 +141,9 @@ void handleConstituents(std::map<std::string, nlohmann::json> &jobs,
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::string> savedArgs;
+/* First message sent to every worker. */
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::string workerConfig = "{}";
 
 /* Worker process: fork + exec of our own binary with --worker, so no
    thread-dependent state (logger, FileTransfer) survives into it. */
@@ -198,6 +201,9 @@ struct Proc {
         }
 
         to = std::move(toPipe.writeSide);
+        if (tryWriteLine(to.get(), workerConfig) < 0) {
+            throw nix::SysError("sending config to worker process");
+        }
         from = std::move(fromPipe.readSide);
         pid = childPid;
     }
@@ -650,6 +656,13 @@ auto main(int argc, char **argv) -> int {
            workers would otherwise race to create fetcher-cache-v4.sqlite and
            fail with "unable to open database file". Open it once here. */
         nix::fetchSettings.getCache();
+
+        if (myArgs.flake) {
+            if (auto lockedAttrs = prefetchFlake(myArgs)) {
+                workerConfig =
+                    nlohmann::json{{"lockedFlake", *lockedAttrs}}.dump();
+            }
+        }
 
         auto cacheStatusResolver = makeCacheStatusResolver(myArgs, state_);
         auto *cacheStatusResolverPtr =

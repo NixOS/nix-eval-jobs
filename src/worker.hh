@@ -24,5 +24,8 @@ constexpr std::string_view MSG_DO = "do ";
 constexpr int WORKER_OUT_FD = 3; // worker -> collector
 constexpr int WORKER_IN_FD = 4;  // collector -> worker
 
+/* Lock the flake once before workers spawn. */
+auto prefetchFlake(MyArgs &args) -> std::optional<std::string>;
+
 void worker(MyArgs &args, nix::AutoCloseFD &toParent,
             nix::AutoCloseFD &fromParent);
