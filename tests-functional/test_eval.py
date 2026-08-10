@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import base64
 import contextlib
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -794,3 +796,61 @@ def test_worker_restart_on_last_job_exits_cleanly() -> None:
         results = [json.loads(r) for r in res.stdout.split("\n") if r]
         assert len(results) == 4
         assert res.returncode == 0, res.stderr
+
+
+def test_fetchers_survive_worker_restart(tmp_path: Path) -> None:
+    """A worker forked after the resolver's first probe (here: forced by
+    --max-memory-size 1) must not inherit an initialised global
+    FileTransfer, or its fetchers hang."""
+    env = _hermetic_nix_env(tmp_path)
+    served = tmp_path / "served"
+    served.mkdir()
+    sources = {}
+    for name in ("one", "two"):
+        data = f"fetched {name}\n".encode()
+        served.joinpath(name).write_bytes(data)
+        sources[name] = base64.b64encode(hashlib.sha256(data).digest()).decode()
+    served.joinpath("nix-cache-info").write_text(
+        f"StoreDir: {env['NIX_STORE_DIR']}\nWantMassQuery: 1\nPriority: 40\n"
+    )
+
+    with _http_server(served) as url:
+        jobs = "\n".join(
+            f"""
+          job-{name} = derivation {{
+            name = "restart-fetch-{name}";
+            system = builtins.currentSystem;
+            builder = "/bin/sh";
+            src = builtins.fetchurl {{
+              url = "{url}/{name}";
+              sha256 = "sha256-{digest}";
+            }};
+          }};"""
+            for name, digest in sources.items()
+        )
+        res = subprocess.run(
+            [
+                str(BIN),
+                "--workers",
+                "1",
+                "--max-memory-size",
+                "1",
+                "--check-cache-status",
+                "--option",
+                "substituters",
+                url,
+                "--option",
+                "require-sigs",
+                "false",
+                "--expr",
+                f"{{ {jobs} }}",
+            ],
+            env=env,
+            text=True,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+
+    results = [json.loads(line) for line in res.stdout.splitlines() if line]
+    assert len(results) == 2

@@ -32,6 +32,7 @@ class MyArgs : virtual public nix::MixEvalArgs,
     bool showInputDrvs = false;
     bool constituents = false;
     bool noInstantiate = false;
+    bool runAsWorker = false;
     size_t nrWorkers = 1;
     size_t maxMemorySize = DEFAULT_MAX_MEMORY_SIZE;
 

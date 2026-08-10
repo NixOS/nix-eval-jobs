@@ -10,7 +10,6 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
-#include <curl/curl.h>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -47,6 +46,9 @@
 #include <optional>
 #include <pthread.h>
 #include <set>
+#include <fcntl.h>
+#include <nix/util/current-process.hh>
+#include <spawn.h>
 #include <span>
 #include <string>
 #include <string_view>
@@ -66,11 +68,34 @@
 #include "store.hh"
 #include "cache-status-resolver.hh"
 
+/* Not declared by <unistd.h> on all platforms. */
+extern "C" char **environ; // NOLINT(readability-redundant-declaration)
+
 namespace {
 MyArgs myArgs; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
-using Processor = std::function<void(MyArgs &myArgs, nix::AutoCloseFD &toFd,
-                                     nix::AutoCloseFD &fromFd)>;
+void runWorker() {
+    nix::AutoCloseFD toParent(WORKER_OUT_FD);
+    nix::AutoCloseFD fromParent(WORKER_IN_FD);
+    nix::logger->log(nix::lvlDebug,
+                     nix::fmt("created worker process %d", getpid()));
+    try {
+        worker(myArgs, toParent, fromParent);
+    } catch (nix::Error &e) {
+        nlohmann::json err;
+        const auto &msg = e.msg();
+        err["error"] = nix::filterANSIEscapes(msg, true);
+        // Also print it to the STDERR log; this is what's shown in
+        // the Hydra UI.
+        nix::logger->log(nix::lvlError, msg);
+        if (tryWriteLine(toParent.get(), err.dump()) < 0) {
+            return; // main process died
+        }
+        if (tryWriteLine(toParent.get(), std::string(MSG_RESTART)) < 0) {
+            return; // main process died
+        }
+    }
+}
 
 void handleConstituents(std::map<std::string, nlohmann::json> &jobs,
                         const MyArgs &args) {
@@ -114,7 +139,11 @@ void handleConstituents(std::map<std::string, nlohmann::json> &jobs,
         resolveNamedConstituents(jobs));
 }
 
-/* Auto-cleanup of fork's process and fds. */
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<std::string> savedArgs;
+
+/* Worker process: fork + exec of our own binary with --worker, so no
+   thread-dependent state (logger, FileTransfer) survives into it. */
 struct Proc {
     nix::AutoCloseFD to, from;
     nix::Pid pid;
@@ -124,39 +153,49 @@ struct Proc {
     auto operator=(const Proc &) -> Proc & = delete;
     auto operator=(Proc &&) -> Proc & = delete;
 
-    explicit Proc(const Processor &proc) {
+    Proc() {
         nix::Pipe toPipe;
         nix::Pipe fromPipe;
         toPipe.create();
         fromPipe.create();
-        auto childPid = startProcess(
-            [&,
-             toFd{std::make_shared<nix::AutoCloseFD>(
-                 std::move(fromPipe.writeSide))},
-             fromFd{std::make_shared<nix::AutoCloseFD>(
-                 std::move(toPipe.readSide))}]() -> void {
-                nix::logger->log(
-                    nix::lvlDebug,
-                    nix::fmt("created worker process %d", getpid()));
-                try {
-                    proc(myArgs, *toFd, *fromFd);
-                } catch (nix::Error &e) {
-                    nlohmann::json err;
-                    const auto &msg = e.msg();
-                    err["error"] = nix::filterANSIEscapes(msg, true);
-                    nix::logger->log(nix::lvlError, msg);
-                    if (tryWriteLine(toFd->get(), err.dump()) < 0) {
-                        return; // main process died
-                    };
-                    // Don't forget to print it into the STDERR log, this is
-                    // what's shown in the Hydra UI.
-                    if (tryWriteLine(toFd->get(), std::string(MSG_RESTART)) <
-                        0) {
-                        return; // main process died
-                    }
-                }
-            },
-            nix::ProcessOptions{.allowVfork = false});
+
+        const std::string selfExe =
+            nix::getSelfExe().value_or(savedArgs.front()).string();
+        std::vector<std::string> args = savedArgs;
+        args.emplace_back("--worker");
+        std::vector<char *> execArgv;
+        execArgv.reserve(args.size() + 1);
+        for (auto &arg : args) {
+            execArgv.push_back(arg.data());
+        }
+        execArgv.push_back(nullptr);
+
+        /* Dup above the target fds so the adddup2 sources cannot
+           collide with WORKER_OUT_FD/WORKER_IN_FD. */
+        constexpr int minFreeFd = WORKER_IN_FD + 1;
+        const nix::AutoCloseFD outFd(
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
+            fcntl(fromPipe.writeSide.get(), F_DUPFD, minFreeFd));
+        const nix::AutoCloseFD inFd(
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
+            fcntl(toPipe.readSide.get(), F_DUPFD, minFreeFd));
+        if (!outFd || !inFd) {
+            throw nix::SysError("duplicating worker pipe fds");
+        }
+
+        posix_spawn_file_actions_t fileActions;
+        posix_spawn_file_actions_init(&fileActions);
+        posix_spawn_file_actions_adddup2(&fileActions, outFd.get(),
+                                         WORKER_OUT_FD);
+        posix_spawn_file_actions_adddup2(&fileActions, inFd.get(),
+                                         WORKER_IN_FD);
+        pid_t childPid = -1;
+        const int err = posix_spawn(&childPid, selfExe.c_str(), &fileActions,
+                                    nullptr, execArgv.data(), environ);
+        posix_spawn_file_actions_destroy(&fileActions);
+        if (err != 0) {
+            throw nix::SysError(err, "spawning worker process");
+        }
 
         to = std::move(toPipe.writeSide);
         from = std::move(fromPipe.readSide);
@@ -482,7 +521,7 @@ void collector(nix::Sync<State> &state_, std::condition_variable &wakeup,
             // Ensure we have a worker that is ready for a job
             while (true) {
                 if (!proc) {
-                    proc = std::make_unique<Proc>(worker);
+                    proc = std::make_unique<Proc>();
                     fromReader =
                         std::make_unique<LineReader>(proc->from.release());
                 }
@@ -541,21 +580,8 @@ void validateIncompatibleFlags(const MyArgs &args) {
 } // namespace
 
 auto main(int argc, char **argv) -> int {
-    /* We are doing the garbage collection by killing forks */
+    /* We are doing the garbage collection by restarting workers */
     setenv("GC_DONT_GC", "1", 1); // NOLINT(concurrency-mt-unsafe)
-
-    /* Because of an objc quirk[1], calling curl_global_init for the first time
-       after fork() will always result in a crash.
-       Up until now the solution has been to set
-       OBJC_DISABLE_INITIALIZE_FORK_SAFETY for every nix process to ignore that
-       error. Instead of working around that error we address it at the core -
-       by calling curl_global_init here, which should mean curl will already
-       have been initialized by the time we try to do so in a forked process.
-
-       [1]
-       https://github.com/apple-oss-distributions/objc4/blob/01edf1705fbc3ff78a423cd21e03dfc21eb4d780/runtime/objc-initialize.mm#L614-L636
-    */
-    curl_global_init(CURL_GLOBAL_ALL);
 
     auto args = std::span(argv, argc);
 
@@ -610,6 +636,13 @@ auto main(int argc, char **argv) -> int {
         if (myArgs.showTrace) {
             nix::loggerSettings.showTrace.assign(true);
         }
+
+        if (myArgs.runAsWorker) {
+            runWorker();
+            return;
+        }
+
+        savedArgs.assign(args.begin(), args.end());
 
         nix::Sync<State> state_;
 

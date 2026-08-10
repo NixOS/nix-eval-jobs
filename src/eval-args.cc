@@ -299,6 +299,15 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
         .experimentalFeature = std::nullopt,
     });
 
+    const std::string internalCategory = "Internal flags";
+    addFlag({
+        .longName = "worker",
+        .description = "run as an evaluation worker process",
+        .category = internalCategory,
+        .handler = {&runAsWorker, true},
+    });
+    hiddenCategories.insert(internalCategory);
+
     expectArg("expr", &releaseExpr);
 }
 
