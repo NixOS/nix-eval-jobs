@@ -65,6 +65,7 @@
 #include "output-stream-lock.hh"
 #include "constituents.hh"
 #include "daemon-settings.hh"
+#include "crash-handler.hh"
 #include "store.hh"
 #include "cache-status-resolver.hh"
 
@@ -571,6 +572,8 @@ void validateIncompatibleFlags(const MyArgs &args) {
 auto main(int argc, char **argv) -> int {
     /* We are doing the garbage collection by restarting workers */
     setenv("GC_DONT_GC", "1", 1); // NOLINT(concurrency-mt-unsafe)
+
+    registerCrashHandler();
 
     auto args = std::span(argv, argc);
 

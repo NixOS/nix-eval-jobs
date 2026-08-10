@@ -21,6 +21,7 @@ add_project_arguments(
 
 threads_dep = dependency('threads', required: true)
 nlohmann_json_dep = dependency('nlohmann_json', required: true)
+boost_dep = dependency('boost', required: true)
 libcurl_dep = dependency('libcurl', required: true)
 
 nix_store_dep = dependency('nix-store', required: true)

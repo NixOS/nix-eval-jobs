@@ -30,6 +30,7 @@ stdenv.mkDerivation {
   ];
   buildInputs = with pkgs; [
     nlohmann_json
+    boost
     curl
     nixComponents.nix-store
     nixComponents.nix-fetchers
