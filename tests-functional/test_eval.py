@@ -741,11 +741,6 @@ def test_fod_with_uncached_input_issue413(tmp_path: Path, scheme: str) -> None:
 
 
 def test_worker_log_format_survives_fork(tmp_path: Path) -> None:
-    """--log-format internal-json must apply inside forked worker processes.
-    By default, nix::startProcess() resets the global nix::logger to a plain
-    logger in every forked child, regardless of --log-format (see
-    src/libutil/unix/processes.cc).
-    """
     env = _hermetic_nix_env(tmp_path)
     assets = TEST_ROOT.joinpath("assets")
 
@@ -772,12 +767,7 @@ def test_worker_log_format_survives_fork(tmp_path: Path) -> None:
     stderr_lines = [line for line in res.stderr.splitlines() if line]
     assert stderr_lines, "expected nix-eval-jobs to log something on stderr"
 
-    # Every line on stderr should be internal-json framed once --log-format
-    # is requested -- including inside the forked worker.
     non_json_lines = [line for line in stderr_lines if not line.startswith("@nix ")]
     assert not non_json_lines, f"stderr contained non-internal-json lines: {non_json_lines}"
-
     for line in stderr_lines:
-        # Must be valid, well-formed internal-json, not just "starts with
-        # @nix " by coincidence.
         json.loads(line[len("@nix ") :])

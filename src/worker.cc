@@ -55,6 +55,7 @@
 
 namespace nix {
 struct Expr;
+extern LogFormat defaultLogFormat;
 } // namespace nix
 
 namespace {
@@ -405,10 +406,8 @@ void worker(
     nix::AutoCloseFD &toParent, // NOLINT(bugprone-easily-swappable-parameters)
     nix::AutoCloseFD &fromParent) {
 
-    // nix::startProcess() resets nix::logger in every forked child (see
-    // src/libutil/unix/processes.cc). Reset it here to the format
-    // requested by the user.
-    nix::setLogFormat(args.logFormat);
+    /* nix::startProcess() resets nix::logger in forked children. */
+    nix::setLogFormat(nix::defaultLogFormat);
 
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
     auto state = nix::make_ref<nix::EvalState>(

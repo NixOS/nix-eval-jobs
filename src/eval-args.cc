@@ -299,19 +299,6 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
         .experimentalFeature = std::nullopt,
     });
 
-    addFlag({
-        .longName = "log-format",
-        .description =
-            "Set the format of log output; one of `raw`, `internal-json`, "
-            "`bar` or `bar-with-logs`.",
-        .category = "",
-        .labels = {"format"},
-        .handler = {[this](std::string format) -> void {
-            logFormat = format;
-            nix::setLogFormat(format);
-        }},
-    });
-
     expectArg("expr", &releaseExpr);
 }
 
