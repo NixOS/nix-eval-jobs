@@ -1,7 +1,4 @@
 #include <algorithm>
-#include <boost/asio/awaitable.hpp>
-#include <boost/asio/co_spawn.hpp> // IWYU pragma: keep
-#include <boost/asio/executor_work_guard.hpp>
 #include <exception>
 #include <map>
 #include <mutex>
@@ -9,16 +6,13 @@
 #include <nix/store/path-info.hh>
 #include <nix/store/path.hh>
 #include <nix/store/store-api.hh>
-#include <nix/store/store-open.hh>
-#include <nix/util/async.hh>
-#include <nix/util/callback.hh>
 #include <nix/util/error.hh>
 #include <nix/util/ref.hh>
 #include <nix/util/signals.hh>
 #include <nix/util/types.hh>
 #include <optional>
 #include <set>
-#include <string>
+#include <deque>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -27,12 +21,9 @@
 #include "drv.hh"
 #include "response.hh"
 
-namespace asio = boost::asio;
-
 namespace {
 
-/* Deterministic output order: by name, then full path (matches the
-   previous queryMissing-based implementation). */
+/* Deterministic output order: by name, then full path. */
 void sortPaths(std::vector<nix::StorePath> &paths) {
     std::ranges::sort(
         paths,
@@ -45,16 +36,8 @@ void sortPaths(std::vector<nix::StorePath> &paths) {
 } // namespace
 
 CacheStatusResolver::CacheStatusResolver(nix::ref<nix::Store> store, Sink sink)
-    : store(std::move(store)), substituters(nix::getDefaultSubstituters()),
-      sink(std::move(sink)), workGuard(asio::make_work_guard(ctx)) {
-    ioThread = std::thread([this]() -> void { ctx.run(); });
-}
-
-void CacheStatusResolver::stopAndJoin() {
-    workGuard.reset();
-    if (ioThread.joinable()) {
-        ioThread.join();
-    }
+    : store(std::move(store)), sink(std::move(sink)) {
+    worker = std::thread([this]() -> void { run(); });
 }
 
 CacheStatusResolver::~CacheStatusResolver() {
@@ -62,110 +45,134 @@ CacheStatusResolver::~CacheStatusResolver() {
         const std::scoped_lock lock(mutex);
         closed = true;
     }
-    // The destructor runs on error paths (exception unwinding) where
-    // draining the backlog would only delay shutdown. Stopping the
-    // io_context would be unsafe: in-flight FileTransfer callbacks
-    // post their completion to it from the curl thread (see
-    // callbackToAwaitable). Instead `aborted` makes every coroutine
-    // bail out right after its current await.
+    /* Don't drain the backlog during unwinding. */
     aborted = true;
-    stopAndJoin();
+    inboxCv.notify_all();
+    if (worker.joinable()) {
+        worker.join();
+    }
 }
 
 void CacheStatusResolver::push(Response response) {
     {
         const std::scoped_lock lock(mutex);
-        // Drop new work after close or a failure: finish() rethrows
-        // the failure anyway, more lookups would be wasted work.
         if (closed || exc) {
             return;
         }
-        inFlight++;
+        inbox.push_back(std::move(response));
     }
-    // NOLINTNEXTLINE(misc-include-cleaner): provided by co_spawn.hpp
-    asio::co_spawn(
-        ctx, process(std::move(response)),
-        [this](const std::exception_ptr &error) -> void { onJobDone(error); });
+    inboxCv.notify_all();
 }
 
 void CacheStatusResolver::finish() {
     {
-        std::unique_lock<std::mutex> lock(mutex);
+        const std::scoped_lock lock(mutex);
         closed = true;
-        idle.wait(lock, [this]() -> bool { return inFlight == 0; });
     }
-    stopAndJoin();
+    inboxCv.notify_all();
+    if (worker.joinable()) {
+        worker.join();
+    }
     const std::scoped_lock lock(mutex);
     if (exc) {
         std::rethrow_exception(exc);
     }
 }
 
-void CacheStatusResolver::onJobDone(const std::exception_ptr &error) {
-    const std::scoped_lock lock(mutex);
-    inFlight--;
-    if (error && !exc) {
-        exc = error;
+void CacheStatusResolver::takeInbox(std::vector<Response> *jobs) {
+    std::deque<Response> taken;
+    {
+        const std::scoped_lock lock(mutex);
+        std::swap(taken, inbox);
+    }
+    for (auto &response : taken) {
+        if (std::holds_alternative<Response::Job>(response.payload)) {
+            jobs->push_back(std::move(response));
+        } else {
+            sink(std::move(response));
+        }
+    }
+}
+
+void CacheStatusResolver::run() {
+    try {
+        std::vector<Response> jobs;
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                inboxCv.wait(lock, [this]() -> bool {
+                    return !inbox.empty() || closed || aborted;
+                });
+                if (aborted || (closed && inbox.empty())) {
+                    return;
+                }
+            }
+            takeInbox(&jobs);
+            while (!jobs.empty()) {
+                nix::checkInterrupt();
+                if (aborted) {
+                    return;
+                }
+                std::erase_if(jobs, [this](Response &response) -> bool {
+                    auto &job = std::get<Response::Job>(response.payload);
+                    if (!tryResolve(job.drv)) {
+                        return false;
+                    }
+                    sink(std::move(response));
+                    return true;
+                });
+                /* Late arrivals widen the next batch. */
+                takeInbox(&jobs);
+                resolveWanted();
+            }
+        }
+    } catch (...) {
+        const std::scoped_lock lock(mutex);
+        exc = std::current_exception();
         aborted = true;
     }
-    if (inFlight == 0) {
-        idle.notify_all();
+}
+
+/* Resolve the paths wanted by all blocked jobs in one batched
+ * querySubstitutablePathInfos call. */
+void CacheStatusResolver::resolveWanted() {
+    if (wanted.empty()) {
+        return;
+    }
+    nix::StorePathCAMap batch;
+    for (const auto &path : std::exchange(wanted, {})) {
+        batch.insert_or_assign(path, std::nullopt);
+    }
+    nix::SubstitutablePathInfos infos;
+    try {
+        store->querySubstitutablePathInfos(batch, infos);
+    } catch (nix::Error &) { // NOLINT(bugprone-empty-catch)
+        /* Unreachable substituters count as misses. */
+    }
+    for (const auto &[path, _ca] : batch) {
+        probeCache.emplace(path, infos.contains(path));
     }
 }
 
-void CacheStatusResolver::throwIfAborted() const {
-    nix::checkInterrupt();
-    if (aborted) {
-        throw nix::Error("cache-status lookup aborted");
-    }
-}
-
-// Coroutine parameters are by value: references can dangle across
-// suspension points.
-auto CacheStatusResolver::substitutable(nix::StorePath path)
-    -> asio::awaitable<bool> {
-    throwIfAborted();
-    if (auto cached = probeCache.find(path); cached != probeCache.end()) {
-        co_return cached->second;
-    }
-    bool found = false;
-    for (const auto &sub : substituters) {
-        if (sub->storeDir != store->storeDir) {
-            continue;
-        }
-        try {
-            co_await nix::callbackToAwaitable<
-                nix::ref<const nix::ValidPathInfo>>(
-                [&](nix::Callback<nix::ref<const nix::ValidPathInfo>> callback)
-                    -> void { sub->queryPathInfo(path, std::move(callback)); });
-            found = true;
-            break;
-            // NOLINTNEXTLINE(bugprone-empty-catch)
-        } catch (nix::InvalidPath &) {
-            // not in this substituter
-            // NOLINTNEXTLINE(bugprone-empty-catch)
-        } catch (nix::Error &) {
-            // unreachable/misconfigured substituter; queryMissing
-            // also treats these as misses
-        }
-    }
-    probeCache.emplace(path, found);
-    co_return found;
-}
-
-auto CacheStatusResolver::allSubstitutable(std::vector<nix::StorePath> paths)
-    -> asio::awaitable<bool> {
+auto CacheStatusResolver::allSubstitutable(
+    const std::vector<nix::StorePath> &paths) -> bool {
+    bool all = true;
     for (const auto &path : paths) {
-        if (!co_await substitutable(path)) {
-            co_return false;
+        if (auto cached = probeCache.find(path); cached != probeCache.end()) {
+            all = all && cached->second;
+        } else {
+            wanted.insert(path);
+            attemptComplete = false;
+            all = false;
         }
     }
-    co_return true;
+    return all;
 }
 
-/* The wanted (or all, when wantedOutputs is empty) output paths of a
-   derivation that are not in the local store; nullopt when an output
-   path is statically unknown (CA derivations). */
+/* The wanted (or all, when wantedOutputs is empty) output paths of a derivation
+ * that are not in the local store. nullopt when an output path is statically
+ * unknown (CA derivations).
+ */
 auto CacheStatusResolver::missingOutputs(const nix::Derivation &derivation,
                                          const nix::StringSet &wantedOutputs)
     -> std::optional<std::vector<nix::StorePath>> {
@@ -186,58 +193,50 @@ auto CacheStatusResolver::missingOutputs(const nix::Derivation &derivation,
 }
 
 // NOLINTNEXTLINE(misc-no-recursion): walking a DAG of derivations
-auto CacheStatusResolver::visitDrv(Traversal *traversal, nix::StorePath drvPath,
-                                   nix::StringSet wantedOutputs)
-    -> asio::awaitable<void> {
-    throwIfAborted();
-    if (!traversal->visited.insert(drvPath).second) {
-        co_return;
+void CacheStatusResolver::visitDrv(Traversal *traversal,
+                                   const nix::StorePath &drvPath,
+                                   const nix::StringSet &wantedOutputs) {
+    if (!attemptComplete || !traversal->visited.insert(drvPath).second) {
+        return;
     }
     auto derivation = store->readDerivation(drvPath);
 
     auto missing = missingOutputs(derivation, wantedOutputs);
     if (!missing) {
-        traversal->drv.unknownPaths.push_back(drvPath);
-        co_return;
+        traversal->unknownPaths.push_back(drvPath);
+        return;
     }
     if (missing->empty()) {
-        co_return;
+        return;
     }
 
-    if (co_await allSubstitutable(*missing)) {
-        // Unlike queryMissing we do not walk the references of
-        // substitutable paths, so neededSubstitutes lists drv
-        // outputs only, not their transitive closure.
+    if (allSubstitutable(*missing)) {
         traversal->substitutePaths.insert(missing->begin(), missing->end());
-        co_return;
+        return;
+    }
+    if (!attemptComplete) {
+        return;
     }
 
     for (const auto &[inputDrvPath, inputNode] : derivation.inputDrvs.map) {
-        co_await visitDrv(traversal, inputDrvPath, inputNode.value);
+        visitDrv(traversal, inputDrvPath, inputNode.value);
     }
-    /* Post-order: dependencies are appended before their dependants,
-       matching the reversed topological sort of the queryMissing-based
-       implementation. */
-    traversal->drv.neededBuilds.push_back(drvPath);
+    /* Post-order: dependencies before their dependants. */
+    traversal->neededBuilds.push_back(drvPath);
 }
 
-auto CacheStatusResolver::process(Response response) -> asio::awaitable<void> {
-    nix::checkInterrupt();
-    if (aborted) {
-        co_return;
-    }
+/* Resolve a job using only cached probe results.
+ * Returns false when a needed probe is still unknown.
+ * The job is retried after the next resolveWanted() round.
+ */
+auto CacheStatusResolver::tryResolve(Drv &drv) -> bool {
+    attemptComplete = true;
 
-    auto *job = std::get_if<Response::Job>(&response.payload);
-    if (job == nullptr) {
-        sink(std::move(response));
-        co_return;
-    }
-    auto &drv = job->drv;
-
-    /* Fast path: all output paths are statically known, so the drv is
-       obtainable iff every missing output is substitutable. This
-       mirrors checkOutputsAvailable and avoids walking the inputs of
-       FODs whose build-time-only deps are not cached (issue #413). */
+    /* Fast path: all output paths are statically known.
+     * The drv is obtainable iff every missing output is substitutable.
+     * This mirrors checkOutputsAvailable and avoids walking the inputs of
+     * FODs whose build-time-only deps are not cached (issue #413).
+     */
     std::vector<nix::StorePath> missingJobOutputs;
     bool outputsKnown = true;
     for (const auto &[outputName, outputPath] : drv.outputs) {
@@ -249,28 +248,39 @@ auto CacheStatusResolver::process(Response response) -> asio::awaitable<void> {
             missingJobOutputs.push_back(*outputPath);
         }
     }
-
     if (outputsKnown) {
-        if (co_await allSubstitutable(missingJobOutputs)) {
+        const bool all = allSubstitutable(missingJobOutputs);
+        if (!attemptComplete) {
+            return false;
+        }
+        if (all) {
             drv.neededSubstitutes = missingJobOutputs;
             sortPaths(drv.neededSubstitutes);
             drv.cacheStatus = missingJobOutputs.empty()
                                   ? Drv::CacheStatus::Local
                                   : Drv::CacheStatus::Cached;
-            sink(std::move(response));
-            co_return;
+            return true;
         }
     }
 
-    /* Slow path: something needs building. Walk the input graph for
-       the per-derivation breakdown (which inputs will build, which
-       come from a cache), like Store::queryMissing. */
-    Traversal traversal{.drv = drv, .visited = {}, .substitutePaths = {}};
-    co_await visitDrv(&traversal, drv.drvPath, {});
+    /* Slow path: Something needs building.
+     * Like Store::queryMissing walk the input graph for the per-derivation
+     * breakdown (which inputs will build, which come from a cache)
+     */
+    Traversal traversal;
+    visitDrv(&traversal, drv.drvPath, {});
+    if (!attemptComplete) {
+        return false;
+    }
 
+    drv.neededBuilds = std::move(traversal.neededBuilds);
+    drv.unknownPaths = std::move(traversal.unknownPaths);
+    /* Unlike queryMissing we do not walk the references of substitutable paths.
+     * Only neededSubstitutes lists drv outputs, not their transitive closure.
+     */
     drv.neededSubstitutes.assign(traversal.substitutePaths.begin(),
                                  traversal.substitutePaths.end());
     sortPaths(drv.neededSubstitutes);
     drv.cacheStatus = Drv::CacheStatus::NotBuilt;
-    sink(std::move(response));
+    return true;
 }
