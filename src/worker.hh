@@ -20,5 +20,9 @@ constexpr std::string_view MSG_RESTART = "restart";
 constexpr std::string_view MSG_EXIT = "exit";
 constexpr std::string_view MSG_DO = "do ";
 
+/* Pipe ends inherited by the exec'ed worker process. */
+constexpr int WORKER_OUT_FD = 3; // worker -> collector
+constexpr int WORKER_IN_FD = 4;  // collector -> worker
+
 void worker(MyArgs &args, nix::AutoCloseFD &toParent,
             nix::AutoCloseFD &fromParent);
