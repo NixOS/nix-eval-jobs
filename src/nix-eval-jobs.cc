@@ -465,7 +465,12 @@ void collector(nix::Sync<State> &state_, std::condition_variable &wakeup,
             // Claim a job before forking so over-provisioned workers stay idle
             auto maybeAttrPath = getNextJob(state_, wakeup);
             if (!maybeAttrPath.has_value()) {
-                if (proc && tryWriteLine(proc->to.get(), "exit") < 0) {
+                /* A worker whose pending status line is "restart" has
+                   already closed its pipe and is exiting on its own. */
+                if (proc &&
+                    checkWorkerStatus(fromReader.get(), proc.get()) !=
+                        "restart" &&
+                    tryWriteLine(proc->to.get(), "exit") < 0) {
                     handleBrokenWorkerPipe(*proc, "sending exit");
                 }
                 return;

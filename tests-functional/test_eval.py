@@ -771,3 +771,26 @@ def test_worker_log_format_survives_fork(tmp_path: Path) -> None:
     assert not non_json_lines, f"stderr contained non-internal-json lines: {non_json_lines}"
     for line in stderr_lines:
         json.loads(line[len("@nix ") :])
+
+
+def test_worker_restart_on_last_job_exits_cleanly() -> None:
+    with TemporaryDirectory() as tempdir:
+        res = subprocess.run(
+            [
+                str(BIN),
+                "--gc-roots-dir",
+                tempdir,
+                "--workers",
+                "1",
+                "--max-memory-size",
+                "1",
+                *COMMON_FLAGS,
+                "ci.nix",
+            ],
+            cwd=TEST_ROOT.joinpath("assets"),
+            text=True,
+            capture_output=True,
+        )
+        results = [json.loads(r) for r in res.stdout.split("\n") if r]
+        assert len(results) == 4
+        assert res.returncode == 0, res.stderr
