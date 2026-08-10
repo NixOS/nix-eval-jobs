@@ -325,22 +325,22 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
                        nix::AutoCloseFD &toParent, nix::Bindings &autoArgs,
                        nix::Value *vRoot, MyArgs &args) -> bool {
     /* Wait for the collector to send us a job name. */
-    if (tryWriteLine(toParent.get(), "next") < 0) {
+    if (tryWriteLine(toParent.get(), std::string(MSG_NEXT)) < 0) {
         return false; // main process died
     }
 
     auto line = fromReader.readLine();
-    if (line == "exit") {
+    if (line == MSG_EXIT) {
         return false;
     }
 
-    if (!nix::hasPrefix(line, "do ")) {
+    if (!nix::hasPrefix(line, MSG_DO)) {
         std::cerr << "worker error: received invalid command '" << line
                   << "'\n";
         abort();
     }
 
-    auto path = nlohmann::json::parse(line.substr(3));
+    auto path = nlohmann::json::parse(line.substr(MSG_DO.size()));
     auto attrPathS = attrPathJoin(path);
 
     /* Evaluate it and send info back to the collector. */
@@ -423,7 +423,7 @@ void worker(
         // Continue processing jobs until we need to exit
     }
 
-    if (tryWriteLine(toParent.get(), "restart") < 0) {
+    if (tryWriteLine(toParent.get(), std::string(MSG_RESTART)) < 0) {
         return; // main process died
     };
 }

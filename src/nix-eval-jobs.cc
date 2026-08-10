@@ -150,7 +150,8 @@ struct Proc {
                     };
                     // Don't forget to print it into the STDERR log, this is
                     // what's shown in the Hydra UI.
-                    if (tryWriteLine(toFd->get(), "restart") < 0) {
+                    if (tryWriteLine(toFd->get(), std::string(MSG_RESTART)) <
+                        0) {
                         return; // main process died
                     }
                 }
@@ -328,7 +329,7 @@ auto checkWorkerStatus(LineReader *fromReader, Proc *proc) -> std::string_view {
     if (line.empty()) {
         handleBrokenWorkerPipe(*proc, "checking worker process");
     }
-    if (line != "next" && line != "restart") {
+    if (line != MSG_NEXT && line != MSG_RESTART) {
         try {
             auto json = nlohmann::json::parse(line);
             throw nix::Error("worker error: %s", std::string(json["error"]));
@@ -465,19 +466,20 @@ void collector(nix::Sync<State> &state_, std::condition_variable &wakeup,
             // Claim a job before forking so over-provisioned workers stay idle
             auto maybeAttrPath = getNextJob(state_, wakeup);
             if (!maybeAttrPath.has_value()) {
-                /* A worker whose pending status line is "restart" has
-                   already closed its pipe and is exiting on its own. */
+                /* A worker whose pending status line is MSG_RESTART
+                   has already closed its pipe and is exiting on its
+                   own. */
                 if (proc &&
                     checkWorkerStatus(fromReader.get(), proc.get()) !=
-                        "restart" &&
-                    tryWriteLine(proc->to.get(), "exit") < 0) {
+                        MSG_RESTART &&
+                    tryWriteLine(proc->to.get(), std::string(MSG_EXIT)) < 0) {
                     handleBrokenWorkerPipe(*proc, "sending exit");
                 }
                 return;
             }
             const auto &attrPath = maybeAttrPath.value();
 
-            // Ensure we have a worker that is ready for a job ("next")
+            // Ensure we have a worker that is ready for a job
             while (true) {
                 if (!proc) {
                     proc = std::make_unique<Proc>(worker);
@@ -485,14 +487,15 @@ void collector(nix::Sync<State> &state_, std::condition_variable &wakeup,
                         std::make_unique<LineReader>(proc->from.release());
                 }
                 auto line = checkWorkerStatus(fromReader.get(), proc.get());
-                if (line != "restart") {
+                if (line != MSG_RESTART) {
                     break;
                 }
                 proc.reset();
                 fromReader.reset();
             }
 
-            if (tryWriteLine(proc->to.get(), "do " + attrPath.dump()) < 0) {
+            if (tryWriteLine(proc->to.get(),
+                             std::string(MSG_DO) + attrPath.dump()) < 0) {
                 auto msg = "sending attrPath '" + joinAttrPath(attrPath) + "'";
                 handleBrokenWorkerPipe(*proc, msg);
             }
