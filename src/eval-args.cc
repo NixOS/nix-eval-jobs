@@ -7,7 +7,6 @@
 #include <nix/flake/lockfile.hh>
 #include <nix/util/canon-path.hh>
 #include <nix/main/common-args.hh>
-#include <nix/main/loggers.hh>
 #include <nix/cmd/common-eval-args.hh>
 #include <nix/util/source-accessor.hh>
 #include <nix/flake/flakeref.hh>
@@ -302,6 +301,7 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
     const std::string internalCategory = "Internal flags";
     addFlag({
         .longName = "worker",
+        .aliases = {},
         .description = "run as an evaluation worker process",
         .category = internalCategory,
         .handler = {&runAsWorker, true},

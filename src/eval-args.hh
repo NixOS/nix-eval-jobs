@@ -33,6 +33,8 @@ class MyArgs : virtual public nix::MixEvalArgs,
     bool constituents = false;
     bool noInstantiate = false;
     bool runAsWorker = false;
+    /* Set from the collector's config message, not a flag. */
+    std::string lockedFlakeAttrs;
     size_t nrWorkers = 1;
     size_t maxMemorySize = DEFAULT_MAX_MEMORY_SIZE;
 

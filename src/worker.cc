@@ -24,6 +24,7 @@
 #include <nix/util/error.hh>
 #include <nix/expr/eval.hh>
 #include <nix/util/file-system.hh>
+#include <nix/fetchers/attrs.hh>
 #include <nix/flake/flakeref.hh>
 #include <nix/flake/flake.hh>
 #include <nix/expr/get-drvs.hh>
@@ -86,13 +87,23 @@ auto releaseExprTopLevelValue(nix::EvalState &state, nix::Bindings &autoArgs,
     return vRoot;
 }
 
-auto evaluateFlake(const nix::ref<nix::EvalState> &state,
-                   const std::string &releaseExpr,
-                   const nix::flake::LockFlags &lockFlags) -> nix::Value * {
+auto evaluateFlake(const nix::ref<nix::EvalState> &state, const MyArgs &args)
+    -> nix::Value * {
     auto [flakeRef, fragment, outputSpec] =
         nix::parseFlakeRefWithFragmentAndExtendedOutputsSpec(
-            nix::fetchSettings, releaseExpr,
+            nix::fetchSettings, args.releaseExpr,
             nix::absPath(std::filesystem::path(".")));
+    const auto &lockFlags = args.lockFlags;
+
+    /* The collector passes the flakeref it already locked and fetched:
+       final + narHash lets the fetcher skip the fetch lock entirely
+       (issue #432). */
+    if (!args.lockedFlakeAttrs.empty()) {
+        flakeRef = nix::FlakeRef::fromAttrs(
+            nix::fetchSettings,
+            nix::fetchers::jsonToAttrs(
+                nlohmann::json::parse(args.lockedFlakeAttrs)));
+    }
 
     nix::InstallableFlake flake{{},       state,      std::move(flakeRef),
                                 fragment, outputSpec, {},
@@ -293,7 +304,7 @@ auto initializeRootValue(const nix::ref<nix::EvalState> &state,
                          nix::Bindings &autoArgs, MyArgs &args)
     -> nix::Value * {
     nix::Value *vEvaluated =
-        args.flake ? evaluateFlake(state, args.releaseExpr, args.lockFlags)
+        args.flake ? evaluateFlake(state, args)
                    : releaseExprTopLevelValue(*state, autoArgs, args);
 
     if (args.selectExpr.empty()) {
@@ -399,10 +410,35 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
 
 } // namespace
 
+auto prefetchFlake(MyArgs &args) -> std::optional<std::string> {
+    auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
+    auto state = nix::make_ref<nix::EvalState>(
+        args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings);
+    auto [flakeRef, fragment, outputSpec] =
+        nix::parseFlakeRefWithFragmentAndExtendedOutputsSpec(
+            nix::fetchSettings, args.releaseExpr,
+            nix::absPath(std::filesystem::path(".")));
+    auto locked = nix::flake::lockFlake(nix::flakeSettings, *state, flakeRef,
+                                        args.lockFlags);
+
+    auto lockedRef = locked.flake.lockedRef;
+    if (!lockedRef.input.isFinal() || !lockedRef.input.getNarHash()) {
+        return std::nullopt;
+    }
+    lockedRef.input =
+        lockedRef.input.fetchToStore(nix::fetchSettings, *state->store).second;
+    return nix::fetchers::attrsToJSON(lockedRef.toAttrs()).dump();
+}
+
 void worker(
     MyArgs &args,
     nix::AutoCloseFD &toParent, // NOLINT(bugprone-easily-swappable-parameters)
     nix::AutoCloseFD &fromParent) {
+
+    LineReader fromReader(fromParent.release());
+
+    auto config = nlohmann::json::parse(fromReader.readLine());
+    args.lockedFlakeAttrs = config.value("lockedFlake", "");
 
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
     auto state = nix::make_ref<nix::EvalState>(
@@ -410,8 +446,6 @@ void worker(
     nix::Bindings &autoArgs = *args.getAutoArgs(*state);
 
     nix::Value *vRoot = initializeRootValue(state, autoArgs, args);
-
-    LineReader fromReader(fromParent.release());
 
     while (processJobRequest(*state, fromReader, toParent, autoArgs, vRoot,
                              args)) {
