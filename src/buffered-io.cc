@@ -17,7 +17,6 @@
 #include <string_view>
 
 #include "buffered-io.hh"
-#include "strings-portable.hh"
 
 [[nodiscard]] auto tryWriteLine(int file_descriptor, std::string str) -> int {
     str += "\n";
@@ -40,9 +39,7 @@
 LineReader::LineReader(int file_descriptor)
     : stream(fdopen(file_descriptor, "r")) {
     if (stream == nullptr) {
-        // NOLINTNEXTLINE(clang-diagnostic-missing-designated-field-initializers)
-        throw nix::Error("fdopen(%d) failed: %s", file_descriptor,
-                         get_error_name(errno));
+        throw nix::SysError("fdopen(%d)", file_descriptor);
     }
 }
 

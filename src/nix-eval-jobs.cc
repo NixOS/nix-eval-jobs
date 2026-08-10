@@ -61,10 +61,10 @@
 #include "buffered-io.hh"
 #include "worker.hh"
 #include "response.hh"
-#include "strings-portable.hh"
 #include "output-stream-lock.hh"
 #include "constituents.hh"
 #include "daemon-settings.hh"
+#include "crash-handler.hh"
 #include "store.hh"
 #include "cache-status-resolver.hh"
 
@@ -303,9 +303,9 @@ void handleBrokenWorkerPipe(Proc &proc, std::string_view msg) {
 
         if (result == -1) {
             kill(pid, SIGKILL);
-            throw nix::Error(
-                "BUG: while %s, waitpid for evaluation worker failed: %s", msg,
-                get_error_name(errno));
+            throw nix::SysError("BUG: while %s, waitpid for evaluation "
+                                "worker failed",
+                                msg);
         }
         if (WIFEXITED(status)) {
             if (WEXITSTATUS(status) == 1) {
@@ -327,25 +327,14 @@ void handleBrokenWorkerPipe(Proc &proc, std::string_view msg) {
                     "memory limit reached?",
                     msg);
                 break;
-#ifdef __APPLE__
-            case SIGBUS:
-                throw nix::Error(
-                    "while %s, evaluation worker got killed by SIGBUS, "
-                    "(possible infinite recursion)",
-                    msg);
-                break;
-#else
-            case SIGSEGV:
-                throw nix::Error(
-                    "while %s, evaluation worker got killed by SIGSEGV, "
-                    "(possible infinite recursion)",
-                    msg);
-#endif
             default:
-                throw nix::Error("while %s, evaluation worker got killed by "
-                                 "signal %d (%s)",
-                                 msg, WTERMSIG(status),
-                                 get_signal_name(WTERMSIG(status)));
+                throw nix::Error(
+                    "while %s, evaluation worker crashed with signal %d "
+                    "(%s); enable coredumps for a backtrace",
+                    msg, WTERMSIG(status),
+                    // constant strings on glibc >= 2.32 and macOS
+                    // NOLINTNEXTLINE(concurrency-mt-unsafe)
+                    strsignal(WTERMSIG(status)));
             }
         } // else ignore WIFSTOPPED and WIFCONTINUED
     }
@@ -582,6 +571,8 @@ void validateIncompatibleFlags(const MyArgs &args) {
 auto main(int argc, char **argv) -> int {
     /* We are doing the garbage collection by restarting workers */
     setenv("GC_DONT_GC", "1", 1); // NOLINT(concurrency-mt-unsafe)
+
+    registerCrashHandler();
 
     auto args = std::span(argv, argc);
 

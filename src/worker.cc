@@ -57,6 +57,16 @@ struct Expr;
 } // namespace nix
 
 namespace {
+
+/* Render and print to STDERR. this is what's shown in the Hydra UI. */
+auto showError(const nix::ErrorInfo &err) -> std::string {
+    std::ostringstream oss;
+    nix::showErrorInfo(oss, err, nix::loggerSettings.showTrace.get());
+    auto msg = oss.str();
+    std::cerr << msg << "\n";
+    return msg;
+}
+
 auto releaseExprTopLevelValue(nix::EvalState &state, nix::Bindings &autoArgs,
                               MyArgs &args) -> nix::Value * {
     nix::Value vTop;
@@ -356,30 +366,20 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
             }
             // We ignore everything that cannot be built
             return Response::Attrs{{}};
-        } catch (nix::EvalError &e) {
-            const auto &err = e.info();
-            std::ostringstream oss;
-            nix::showErrorInfo(oss, err, nix::loggerSettings.showTrace.get());
-            auto msg = oss.str();
-
-            // Print to STDERR for Hydra UI
-            std::cerr << msg << "\n";
-            return Response::Error{nix::filterANSIEscapes(msg, true)};
-        } catch (const std::exception &e) {
-            // FIXME: for some reason the catch block above doesn't trigger on
-            // macOS (?)
-            const auto *msg = e.what();
-            std::cerr << msg << '\n';
+        } catch (nix::StackOverflowError &e) {
+            /* Not an EvalError. Fatal aborts the whole evaluation. */
+            auto msg = showError(e.info());
             return Response::Error{
                 .error = nix::filterANSIEscapes(msg, true),
-                // Nix 2.34 throws `StackOverflowError` whreas before, Nix
-                // actually exhausted the C/C++ stack and crashed the worker.
-                //
-                // Mark this error fatal so the collector replicates the old
-                // fail-on-infinite-recursion behavior.
-                .fatal = dynamic_cast<const nix::StackOverflowError *>(&e) !=
-                         nullptr,
+                .fatal = true,
             };
+        } catch (nix::EvalError &e) {
+            auto msg = showError(e.info());
+            return Response::Error{nix::filterANSIEscapes(msg, true)};
+        } catch (const std::exception &e) {
+            const auto *msg = e.what();
+            std::cerr << msg << '\n';
+            return Response::Error{nix::filterANSIEscapes(msg, true)};
         }
     }();
 

@@ -3,9 +3,9 @@ common_src = [
   'drv.cc',
   'response.cc',
   'buffered-io.cc',
+  'crash-handler.cc',
   'constituents.cc',
   'worker.cc',
-  'strings-portable.cc',
   'output-stream-lock.cc',
   'cache-status-resolver.cc',
   'daemon-settings.cc'
@@ -14,6 +14,7 @@ common_src = [
 common_deps = [
   threads_dep,
   nlohmann_json_dep,
+  boost_dep,
   libcurl_dep,
 
   nix_store_dep,
