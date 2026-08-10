@@ -7,6 +7,7 @@
 #include <nix/expr/attr-path.hh>
 #include <nix/store/local-fs-store.hh>
 #include <nix/store/globals.hh>
+#include <nix/main/loggers.hh>
 #include <nix/cmd/installable-flake.hh>
 #include <nix/expr/value-to-json.hh>
 #include <sys/resource.h>
@@ -54,6 +55,7 @@
 
 namespace nix {
 struct Expr;
+extern LogFormat defaultLogFormat;
 } // namespace nix
 
 namespace {
@@ -403,6 +405,9 @@ void worker(
     MyArgs &args,
     nix::AutoCloseFD &toParent, // NOLINT(bugprone-easily-swappable-parameters)
     nix::AutoCloseFD &fromParent) {
+
+    /* nix::startProcess() resets nix::logger in forked children. */
+    nix::setLogFormat(nix::defaultLogFormat);
 
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
     auto state = nix::make_ref<nix::EvalState>(

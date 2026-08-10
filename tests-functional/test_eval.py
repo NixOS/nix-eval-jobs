@@ -738,3 +738,36 @@ def test_fod_with_uncached_input_issue413(tmp_path: Path, scheme: str) -> None:
     jobs = [json.loads(line) for line in res.splitlines() if line]
     fod = next(job for job in jobs if job["attr"] == "fod")
     assert fod["cacheStatus"] == "cached", fod
+
+
+def test_worker_log_format_survives_fork(tmp_path: Path) -> None:
+    env = _hermetic_nix_env(tmp_path)
+    assets = TEST_ROOT.joinpath("assets")
+
+    res = subprocess.run(
+        [
+            str(BIN),
+            "--gc-roots-dir",
+            str(tmp_path / "gc"),
+            *COMMON_FLAGS,
+            "--log-format",
+            "internal-json",
+            "--option",
+            "substituters",
+            "",
+            "--flake",
+            ".#hydraJobs",
+        ],
+        cwd=assets,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    stderr_lines = [line for line in res.stderr.splitlines() if line]
+    assert stderr_lines, "expected nix-eval-jobs to log something on stderr"
+
+    non_json_lines = [line for line in stderr_lines if not line.startswith("@nix ")]
+    assert not non_json_lines, f"stderr contained non-internal-json lines: {non_json_lines}"
+    for line in stderr_lines:
+        json.loads(line[len("@nix ") :])

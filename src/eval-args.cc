@@ -7,6 +7,7 @@
 #include <nix/flake/lockfile.hh>
 #include <nix/util/canon-path.hh>
 #include <nix/main/common-args.hh>
+#include <nix/main/loggers.hh>
 #include <nix/cmd/common-eval-args.hh>
 #include <nix/util/source-accessor.hh>
 #include <nix/flake/flakeref.hh>
