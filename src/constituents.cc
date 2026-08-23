@@ -110,7 +110,7 @@ namespace {
 void addConstituents(nlohmann::json &job, nix::Derivation &drv,
                      const std::set<std::string> &dependencies,
                      const std::map<std::string, nlohmann::json> &jobs,
-                     const nix::ref<nix::LocalFSStore> &store) {
+                     const nix::ref<nix::Store> &store) {
     for (const auto &childJobName : dependencies) {
         auto childDrvPath = store->parseStorePath(
             std::string(jobs.find(childJobName)->second["drvPath"]));
@@ -123,7 +123,7 @@ void addConstituents(nlohmann::json &job, nix::Derivation &drv,
 
 void rewriteAndRegisterDrv(nlohmann::json &job, nix::Derivation &drv,
                            const nix::StorePath &drvPath,
-                           const nix::ref<nix::LocalFSStore> &store,
+                           const nix::ref<nix::Store> &store,
                            const std::filesystem::path &gcRootsDir) {
     // Reset outputs so fillInOutputPaths recomputes them
     // with the updated inputDrvs (constituents).
@@ -143,11 +143,14 @@ void rewriteAndRegisterDrv(nlohmann::json &job, nix::Derivation &drv,
 
     auto newDrvPathS = store->printStorePath(newDrvPath);
 
-    if (!gcRootsDir.empty()) {
+    /* Only file system stores support gc roots. Stores with their own
+       retention (e.g. an eval store plugin) keep the drv alive themselves. */
+    auto localStore = store.dynamic_pointer_cast<nix::LocalFSStore>();
+    if (!gcRootsDir.empty() && localStore) {
         const auto root =
             gcRootsDir / std::string(nix::baseNameOf(newDrvPathS));
         if (!nix::pathExists(root)) {
-            store->addPermRoot(newDrvPath, root);
+            localStore->addPermRoot(newDrvPath, root);
         }
     }
 
@@ -236,7 +239,7 @@ auto resolveNamedConstituents(const std::map<std::string, nlohmann::json> &jobs)
 
 void rewriteAggregates(std::map<std::string, nlohmann::json> &jobs,
                        const std::vector<AggregateJob> &aggregateJobs,
-                       const nix::ref<nix::LocalFSStore> &store,
+                       const nix::ref<nix::Store> &store,
                        const std::filesystem::path &gcRootsDir) {
     for (const auto &aggregateJob : aggregateJobs) {
         auto &job = jobs.find(aggregateJob.name)->second;

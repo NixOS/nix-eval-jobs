@@ -101,20 +101,11 @@ void handleConstituents(std::map<std::string, nlohmann::json> &jobs,
                         const MyArgs &args) {
 
     auto store = nix_eval_jobs::openStore(args.evalStoreUrl);
-    auto localStore = store.dynamic_pointer_cast<nix::LocalFSStore>();
-
-    if (!localStore) {
-        nix::warn("constituents feature requires a local store, skipping "
-                  "aggregate rewriting");
-        return;
-    }
-
-    auto localStoreRef = nix::ref<nix::LocalFSStore>(localStore);
 
     std::visit(
         nix::overloaded{
             [&](const std::vector<AggregateJob> &namedConstituents) -> void {
-                rewriteAggregates(jobs, namedConstituents, localStoreRef,
+                rewriteAggregates(jobs, namedConstituents, store,
                                   args.gcRootsDir);
             },
             [&](const DependencyCycle &cycle) -> void {
