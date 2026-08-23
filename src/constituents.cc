@@ -116,8 +116,11 @@ void addConstituents(nlohmann::json &job, nix::Derivation &drv,
             std::string(jobs.find(childJobName)->second["drvPath"]));
         auto childDrv = store->readDerivation(childDrvPath);
         job["constituents"].push_back(store->printStorePath(childDrvPath));
-        drv.inputDrvs.map[childDrvPath].value = {
-            childDrv.outputs.begin()->first};
+        drv.inputs.insert(nix::SingleDerivedPath::Built{
+            .drvPath = nix::make_ref<nix::SingleDerivedPath>(
+                nix::SingleDerivedPath::Opaque{.path = childDrvPath}),
+            .output = childDrv.outputs.begin()->first,
+        });
     }
 }
 
@@ -126,7 +129,7 @@ void rewriteAndRegisterDrv(nlohmann::json &job, nix::Derivation &drv,
                            const nix::ref<nix::Store> &store,
                            const std::filesystem::path &gcRootsDir) {
     // Reset outputs so fillInOutputPaths recomputes them
-    // with the updated inputDrvs (constituents).
+    // with the updated inputs (constituents).
     for (auto &[name, output] : drv.outputs) {
         if (std::holds_alternative<nix::DerivationOutput::InputAddressed>(
                 output.raw)) {
@@ -134,7 +137,7 @@ void rewriteAndRegisterDrv(nlohmann::json &job, nix::Derivation &drv,
             drv.env[name] = "";
         }
     }
-    drv.fillInOutputPaths(*store);
+    fillInOutputPaths(drv, *store);
 
     auto newDrvPath = store->writeDerivation(drv);
     if (newDrvPath == drvPath) {

@@ -2,6 +2,7 @@
 #include <exception>
 #include <map>
 #include <mutex>
+#include <nix/store/derived-path.hh>
 #include <nix/store/derivations.hh>
 #include <nix/store/path-info.hh>
 #include <nix/store/path.hh>
@@ -210,7 +211,7 @@ auto CacheStatusResolver::missingOutputs(const nix::Derivation &derivation,
     -> MissingOutputs {
     MissingOutputs result;
     for (const auto &[outputName, outputPathOpt] :
-         derivation.outputsAndOptPaths(*evalStore)) {
+         outputsAndOptPaths(derivation, *evalStore)) {
         if (!wantedOutputs.empty() && !wantedOutputs.contains(outputName)) {
             continue;
         }
@@ -240,6 +241,28 @@ void CacheStatusResolver::visitDrv(Traversal *traversal,
         return;
     }
     const auto &derivation = readDerivation(drvPath);
+    /* The input derivations, grouped so each is visited once with every
+     * output wanted from it. Source inputs aren't derivations. */
+    std::map<nix::StorePath, nix::StringSet> inputDrvs;
+    for (const auto &input : derivation.inputs) {
+        const auto *built =
+            std::get_if<nix::SingleDerivedPath::Built>(&input.raw());
+        if (built == nullptr) {
+            continue;
+        }
+        const auto *opaque =
+            std::get_if<nix::SingleDerivedPath::Opaque>(&built->drvPath->raw());
+        if (opaque == nullptr) {
+            // An output of a dynamic derivation. TODO probe it; its
+            // outputs are unknown until the derivation producing them is
+            // built. Visiting the derivation it comes from with no
+            // wanted outputs — meaning all of them — is what pre-2.36
+            // did, by leaving the nested childMap unread.
+            inputDrvs[built->drvPath->getBaseStorePath()];
+            continue;
+        }
+        inputDrvs[opaque->path].insert(built->output);
+    }
 
     auto outputs = missingOutputs(derivation, wantedOutputs);
     if (!outputs.known) {
@@ -249,8 +272,8 @@ void CacheStatusResolver::visitDrv(Traversal *traversal,
     /* Validity probes are cheap daemon lookups: recurse anyway so a single
      * queryValidPaths round covers the whole closure. */
     if (!outputs.complete) {
-        for (const auto &[inputDrvPath, inputNode] : derivation.inputDrvs.map) {
-            visitDrv(traversal, inputDrvPath, inputNode.value);
+        for (const auto &[inputDrvPath, inputWanted] : inputDrvs) {
+            visitDrv(traversal, inputDrvPath, inputWanted);
         }
         return;
     }
@@ -270,8 +293,8 @@ void CacheStatusResolver::visitDrv(Traversal *traversal,
         return;
     }
 
-    for (const auto &[inputDrvPath, inputNode] : derivation.inputDrvs.map) {
-        visitDrv(traversal, inputDrvPath, inputNode.value);
+    for (const auto &[inputDrvPath, inputWanted] : inputDrvs) {
+        visitDrv(traversal, inputDrvPath, inputWanted);
     }
     /* Post-order: dependencies before their dependants. */
     traversal->neededBuilds.push_back(drvPath);

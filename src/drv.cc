@@ -97,12 +97,24 @@ auto queryMeta(nix::PackageInfo &packageInfo, nix::EvalState &state)
 auto queryInputDrvs(const nix::Derivation &drv)
     -> std::map<nix::StorePath, std::set<std::string>> {
     std::map<nix::StorePath, std::set<std::string>> drvs;
-    for (const auto &[inputDrvPath, inputNode] : drv.inputDrvs.map) {
-        std::set<std::string> inputDrvOutputs;
-        for (const auto &outputName : inputNode.value) {
-            inputDrvOutputs.insert(outputName);
+    for (const auto &input : drv.inputs) {
+        const auto *built =
+            std::get_if<nix::SingleDerivedPath::Built>(&input.raw());
+        if (built == nullptr) {
+            continue;
         }
-        drvs.emplace(inputDrvPath, std::move(inputDrvOutputs));
+        const auto *opaque =
+            std::get_if<nix::SingleDerivedPath::Opaque>(&built->drvPath->raw());
+        if (opaque == nullptr) {
+            // An output of a dynamic derivation. TODO report it; the
+            // output name belongs to the derivation that derivation
+            // produces, so this format has nowhere to put it. Naming the
+            // derivation it comes from with no outputs is what pre-2.36
+            // did, by leaving the nested childMap unread.
+            drvs[built->drvPath->getBaseStorePath()];
+            continue;
+        }
+        drvs[opaque->path].insert(built->output);
     }
     return drvs;
 }

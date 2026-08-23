@@ -272,9 +272,8 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
             }
             lockFlags.inputOverrides.insert_or_assign(
                 std::move(*path),
-                nix::parseFlakeRef(nix::fetchSettings, flakeRef,
-                                   nix::absPath(std::filesystem::path(".")),
-                                   true));
+                nix::parseFlakeRef(
+                    flakeRef, nix::absPath(std::filesystem::path(".")), true));
         }},
         .completer = nullptr,
         .experimentalFeature = std::nullopt,
