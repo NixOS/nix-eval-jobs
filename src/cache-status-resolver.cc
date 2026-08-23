@@ -133,9 +133,16 @@ void CacheStatusResolver::run() {
     }
 }
 
-/* Resolve the paths wanted by all blocked jobs in one batched
- * querySubstitutablePathInfos call. */
+/* Resolve the paths wanted by all blocked jobs in batched
+ * queryValidPaths / querySubstitutablePathInfos calls. */
 void CacheStatusResolver::resolveWanted() {
+    if (!wantedValid.empty()) {
+        const auto batch = std::exchange(wantedValid, {});
+        const auto valid = store->queryValidPaths(batch);
+        for (const auto &path : batch) {
+            validCache.emplace(path, valid.contains(path));
+        }
+    }
     if (wanted.empty()) {
         return;
     }
@@ -155,66 +162,108 @@ void CacheStatusResolver::resolveWanted() {
 }
 
 auto CacheStatusResolver::allSubstitutable(
-    const std::vector<nix::StorePath> &paths) -> bool {
+    const std::vector<nix::StorePath> &paths) -> std::optional<bool> {
     bool all = true;
+    bool complete = true;
     for (const auto &path : paths) {
         if (auto cached = probeCache.find(path); cached != probeCache.end()) {
             all = all && cached->second;
         } else {
             wanted.insert(path);
             attemptComplete = false;
-            all = false;
+            complete = false;
         }
+    }
+    if (!complete) {
+        return std::nullopt;
     }
     return all;
 }
 
+auto CacheStatusResolver::probeValidity(const nix::StorePath &path)
+    -> std::optional<bool> {
+    if (auto cached = validCache.find(path); cached != validCache.end()) {
+        return cached->second;
+    }
+    wantedValid.insert(path);
+    attemptComplete = false;
+    return std::nullopt;
+}
+
+auto CacheStatusResolver::readDerivation(const nix::StorePath &drvPath)
+    -> const nix::Derivation & {
+    if (auto cached = drvCache.find(drvPath); cached != drvCache.end()) {
+        return cached->second;
+    }
+    return drvCache.emplace(drvPath, store->readDerivation(drvPath))
+        .first->second;
+}
+
 /* The wanted (or all, when wantedOutputs is empty) output paths of a derivation
- * that are not in the local store. nullopt when an output path is statically
- * unknown (CA derivations).
- */
+ * that are not in the local store. Probes past pending lookups so one retry
+ * round batches as many paths as possible. */
 auto CacheStatusResolver::missingOutputs(const nix::Derivation &derivation,
                                          const nix::StringSet &wantedOutputs)
-    -> std::optional<std::vector<nix::StorePath>> {
-    std::vector<nix::StorePath> missing;
+    -> MissingOutputs {
+    MissingOutputs result;
     for (const auto &[outputName, outputPathOpt] :
          derivation.outputsAndOptPaths(*store)) {
         if (!wantedOutputs.empty() && !wantedOutputs.contains(outputName)) {
             continue;
         }
         if (!outputPathOpt.second) {
-            return std::nullopt;
+            result.known = false;
+            return result;
         }
-        if (!store->isValidPath(*outputPathOpt.second)) {
-            missing.push_back(*outputPathOpt.second);
+        auto valid = probeValidity(*outputPathOpt.second);
+        if (!valid) {
+            result.complete = false;
+            continue;
+        }
+        if (!*valid) {
+            result.missing.push_back(*outputPathOpt.second);
         }
     }
-    return missing;
+    return result;
 }
 
 // NOLINTNEXTLINE(misc-no-recursion): walking a DAG of derivations
 void CacheStatusResolver::visitDrv(Traversal *traversal,
                                    const nix::StorePath &drvPath,
                                    const nix::StringSet &wantedOutputs) {
-    if (!attemptComplete || !traversal->visited.insert(drvPath).second) {
+    /* Siblings are still visited after a pending probe: the traversal is
+     * discarded, but every visit widens the next batch. */
+    if (!traversal->visited.insert(drvPath).second) {
         return;
     }
-    auto derivation = store->readDerivation(drvPath);
+    const auto &derivation = readDerivation(drvPath);
 
-    auto missing = missingOutputs(derivation, wantedOutputs);
-    if (!missing) {
+    auto outputs = missingOutputs(derivation, wantedOutputs);
+    if (!outputs.known) {
         traversal->unknownPaths.push_back(drvPath);
         return;
     }
-    if (missing->empty()) {
+    /* Validity probes are cheap daemon lookups: recurse anyway so a single
+     * queryValidPaths round covers the whole closure. */
+    if (!outputs.complete) {
+        for (const auto &[inputDrvPath, inputNode] : derivation.inputDrvs.map) {
+            visitDrv(traversal, inputDrvPath, inputNode.value);
+        }
+        return;
+    }
+    if (outputs.missing.empty()) {
         return;
     }
 
-    if (allSubstitutable(*missing)) {
-        traversal->substitutePaths.insert(missing->begin(), missing->end());
+    /* Substituter probes are per-path narinfo requests: stay pruned, a
+     * substitutable derivation's inputs are never probed. */
+    auto substitutable = allSubstitutable(outputs.missing);
+    if (!substitutable) {
         return;
     }
-    if (!attemptComplete) {
+    if (*substitutable) {
+        traversal->substitutePaths.insert(outputs.missing.begin(),
+                                          outputs.missing.end());
         return;
     }
 
@@ -239,21 +288,30 @@ auto CacheStatusResolver::tryResolve(Drv &drv) -> bool {
      */
     std::vector<nix::StorePath> missingJobOutputs;
     bool outputsKnown = true;
+    bool outputsComplete = true;
     for (const auto &[outputName, outputPath] : drv.outputs) {
         if (!outputPath) {
             outputsKnown = false;
             break;
         }
-        if (!store->isValidPath(*outputPath)) {
+        auto valid = probeValidity(*outputPath);
+        if (!valid) {
+            outputsComplete = false;
+            continue;
+        }
+        if (!*valid) {
             missingJobOutputs.push_back(*outputPath);
         }
     }
     if (outputsKnown) {
-        const bool all = allSubstitutable(missingJobOutputs);
-        if (!attemptComplete) {
+        if (!outputsComplete) {
             return false;
         }
-        if (all) {
+        const auto all = allSubstitutable(missingJobOutputs);
+        if (!all) {
+            return false;
+        }
+        if (*all) {
             drv.neededSubstitutes = missingJobOutputs;
             sortPaths(drv.neededSubstitutes);
             drv.cacheStatus = missingJobOutputs.empty()
