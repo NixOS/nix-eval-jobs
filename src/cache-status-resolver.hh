@@ -54,15 +54,26 @@ class CacheStatusResolver {
         std::set<nix::StorePath> substitutePaths;
     };
 
+    struct MissingOutputs {
+        /* False when an output path is statically unknown (CA derivations). */
+        bool known = true;
+        /* False when a validity probe is still pending. */
+        bool complete = true;
+        std::vector<nix::StorePath> missing;
+    };
+
     void run();
     void takeInbox(std::vector<Response> *jobs);
     auto tryResolve(Drv &drv) -> bool;
     void visitDrv(Traversal *traversal, const nix::StorePath &drvPath,
                   const nix::StringSet &wantedOutputs);
     auto missingOutputs(const nix::Derivation &derivation,
-                        const nix::StringSet &wantedOutputs)
-        -> std::optional<std::vector<nix::StorePath>>;
-    auto allSubstitutable(const std::vector<nix::StorePath> &paths) -> bool;
+                        const nix::StringSet &wantedOutputs) -> MissingOutputs;
+    auto allSubstitutable(const std::vector<nix::StorePath> &paths)
+        -> std::optional<bool>;
+    auto probeValidity(const nix::StorePath &path) -> std::optional<bool>;
+    auto readDerivation(const nix::StorePath &drvPath)
+        -> const nix::Derivation &;
     void resolveWanted();
 
     nix::ref<nix::Store> store;
@@ -80,7 +91,10 @@ class CacheStatusResolver {
      * remembered across jobs. */
     std::map<nix::StorePath, bool> probeCache;
     std::set<nix::StorePath> wanted;
-    /* False when the current tryResolve() hit a path missing from probeCache.
-     */
+    /* Local-store validity, resolved in batched queryValidPaths calls. */
+    std::map<nix::StorePath, bool> validCache;
+    nix::StorePathSet wantedValid;
+    std::map<nix::StorePath, nix::Derivation> drvCache;
+    /* False when the current tryResolve() hit a path missing from a cache. */
     bool attemptComplete = true;
 };
