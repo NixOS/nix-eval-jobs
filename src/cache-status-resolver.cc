@@ -35,8 +35,11 @@ void sortPaths(std::vector<nix::StorePath> &paths) {
 
 } // namespace
 
-CacheStatusResolver::CacheStatusResolver(nix::ref<nix::Store> store, Sink sink)
-    : store(std::move(store)), sink(std::move(sink)) {
+CacheStatusResolver::CacheStatusResolver(nix::ref<nix::Store> evalStore,
+                                         nix::ref<nix::Store> buildStore,
+                                         Sink sink)
+    : evalStore(std::move(evalStore)), buildStore(std::move(buildStore)),
+      sink(std::move(sink)) {
     worker = std::thread([this]() -> void { run(); });
 }
 
@@ -138,7 +141,7 @@ void CacheStatusResolver::run() {
 void CacheStatusResolver::resolveWanted() {
     if (!wantedValid.empty()) {
         const auto batch = std::exchange(wantedValid, {});
-        const auto valid = store->queryValidPaths(batch);
+        const auto valid = buildStore->queryValidPaths(batch);
         for (const auto &path : batch) {
             validCache.emplace(path, valid.contains(path));
         }
@@ -152,7 +155,7 @@ void CacheStatusResolver::resolveWanted() {
     }
     nix::SubstitutablePathInfos infos;
     try {
-        store->querySubstitutablePathInfos(batch, infos);
+        buildStore->querySubstitutablePathInfos(batch, infos);
     } catch (nix::Error &) { // NOLINT(bugprone-empty-catch)
         /* Unreachable substituters count as misses. */
     }
@@ -195,7 +198,7 @@ auto CacheStatusResolver::readDerivation(const nix::StorePath &drvPath)
     if (auto cached = drvCache.find(drvPath); cached != drvCache.end()) {
         return cached->second;
     }
-    return drvCache.emplace(drvPath, store->readDerivation(drvPath))
+    return drvCache.emplace(drvPath, evalStore->readDerivation(drvPath))
         .first->second;
 }
 
@@ -207,7 +210,7 @@ auto CacheStatusResolver::missingOutputs(const nix::Derivation &derivation,
     -> MissingOutputs {
     MissingOutputs result;
     for (const auto &[outputName, outputPathOpt] :
-         derivation.outputsAndOptPaths(*store)) {
+         derivation.outputsAndOptPaths(*evalStore)) {
         if (!wantedOutputs.empty() && !wantedOutputs.contains(outputName)) {
             continue;
         }
