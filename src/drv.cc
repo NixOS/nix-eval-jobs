@@ -2,6 +2,8 @@
 #include <nix/store/path-with-outputs.hh>
 #include <nix/store/store-api.hh>
 #include <nix/store/local-fs-store.hh>
+#include <nix/store/remote-store.hh>
+#include <atomic>
 #include <nix/store/globals.hh>
 #include <nix/expr/value-to-json.hh>
 #include <nix/store/derivations.hh>
@@ -125,31 +127,32 @@ auto Drv::fromPackageInfo(std::string &attrPath, nix::EvalState &state,
         .constituents = std::move(constituents),
     };
 
-    // Check if we can read derivations (requires LocalFSStore and not in
-    // read-only mode)
-    auto localStore = store.dynamic_pointer_cast<nix::LocalFSStore>();
-    const bool canReadDerivation = localStore && !nix::settings.readOnlyMode;
+    /* Reading the derivation is cheap except through a daemon
+       connection, so RemoteStore keeps the fallback. A store that
+       fails to read is remembered. */
+    static std::atomic<bool> storeReadsDrvs = true;
+    const bool tryReadDerivation =
+        !nix::settings.readOnlyMode && storeReadsDrvs &&
+        !store.dynamic_pointer_cast<nix::RemoteStore>();
 
-    if (canReadDerivation) {
-        // We can read the derivation directly for precise information
-        auto drv = localStore->readDerivation(packageInfo.requireDrvPath());
-
-        // Use the more precise system from the derivation
-        result.system = drv.platform;
-
-        if (args.showInputDrvs) {
-            result.inputDrvs = queryInputDrvs(drv);
+    bool precise = false;
+    if (tryReadDerivation) {
+        try {
+            auto drv = store->readDerivation(packageInfo.requireDrvPath());
+            result.system = drv.platform;
+            if (args.showInputDrvs) {
+                result.inputDrvs = queryInputDrvs(drv);
+            }
+            auto drvOptions = derivationOptionsFromStructuredAttrs(
+                *store, drv.env, get(drv.structuredAttrs));
+            result.requiredSystemFeatures =
+                std::optional(drvOptions.getRequiredSystemFeatures(drv));
+            precise = true;
+        } catch (nix::Error &) {
+            storeReadsDrvs = false;
         }
-
-        auto drvOptions = derivationOptionsFromStructuredAttrs(
-            *store, drv.env, get(drv.structuredAttrs));
-        result.requiredSystemFeatures =
-            std::optional(drvOptions.getRequiredSystemFeatures(drv));
-    } else {
-        // Fall back to basic info from PackageInfo
-        // This happens when:
-        // - In read-only/no-instantiate mode
-        // - Store is not a LocalFSStore (e.g., remote store)
+    }
+    if (!precise) {
         result.system = packageInfo.querySystem();
     }
 
