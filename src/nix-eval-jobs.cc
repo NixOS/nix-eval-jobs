@@ -483,6 +483,7 @@ auto makeCacheStatusResolver(const MyArgs &args, nix::Sync<State> &state_)
     }
     return std::optional<CacheStatusResolver>(
         std::in_place, nix_eval_jobs::openStore(args.evalStoreUrl),
+        nix_eval_jobs::openStore(),
         [&state_](const Response &response) -> void {
             nlohmann::json jsonResponse = response;
             auto dumped = jsonResponse.dump();

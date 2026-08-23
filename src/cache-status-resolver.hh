@@ -30,7 +30,11 @@ class CacheStatusResolver {
      */
     using Sink = std::function<void(Response)>;
 
-    CacheStatusResolver(nix::ref<nix::Store> store, Sink sink);
+    /* Derivations are read from the eval store. Validity and
+     * substitutability are resolved against the build store, the eval
+     * store never holds outputs. */
+    CacheStatusResolver(nix::ref<nix::Store> evalStore,
+                        nix::ref<nix::Store> buildStore, Sink sink);
     ~CacheStatusResolver();
 
     CacheStatusResolver(const CacheStatusResolver &) = delete;
@@ -76,7 +80,8 @@ class CacheStatusResolver {
         -> const nix::Derivation &;
     void resolveWanted();
 
-    nix::ref<nix::Store> store;
+    nix::ref<nix::Store> evalStore;
+    nix::ref<nix::Store> buildStore;
     Sink sink;
 
     std::mutex mutex;
