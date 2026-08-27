@@ -31,10 +31,25 @@
         { pkgs, self', ... }:
         let
           nixDependencies = lib.makeScope pkgs.newScope (
-            import (inputs.nix + "/packaging/dependencies.nix") {
-              inherit pkgs;
-              inherit (pkgs) stdenv;
-              inputs = { };
+            scope:
+            let
+              super = import (inputs.nix + "/packaging/dependencies.nix") {
+                inherit pkgs;
+                inherit (pkgs) stdenv;
+                inputs = { };
+              } scope;
+            in
+            super
+            // {
+              # `dependencies.nix` patches boost for
+              # https://github.com/NixOS/nix/issues/16174, but the nixpkgs we
+              # track already backports that commit (boostorg/context@5883212),
+              # so cut the extra patches.
+              #
+              # FIXME avoid messing up in Nix itself instead.
+              boost = super.boost.overrideAttrs (_: {
+                patches = pkgs.boost.patches;
+              });
             }
           );
           nixComponents = lib.makeScope nixDependencies.newScope (
@@ -51,13 +66,15 @@
         in
         {
           treefmt.imports = [ ./dev/treefmt.nix ];
-          packages.nix-eval-jobs = pkgs.callPackage ./default.nix drvArgs;
-          packages.clangStdenv-nix-eval-jobs = pkgs.callPackage ./default.nix (
+          packages.nix-eval-jobs = nixDependencies.callPackage ./default.nix drvArgs;
+          packages.clangStdenv-nix-eval-jobs = nixDependencies.callPackage ./default.nix (
             drvArgs // { stdenv = pkgs.clangStdenv; }
           );
           packages.default = self'.packages.nix-eval-jobs;
-          devShells.default = pkgs.callPackage ./shell.nix drvArgs;
-          devShells.clang = pkgs.callPackage ./shell.nix (drvArgs // { stdenv = pkgs.clangStdenv; });
+          devShells.default = nixDependencies.callPackage ./shell.nix drvArgs;
+          devShells.clang = nixDependencies.callPackage ./shell.nix (
+            drvArgs // { stdenv = pkgs.clangStdenv; }
+          );
 
           checks = builtins.removeAttrs self'.packages [ "default" ] // {
             shell = self'.devShells.default;
