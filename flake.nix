@@ -51,13 +51,15 @@
         in
         {
           treefmt.imports = [ ./dev/treefmt.nix ];
-          packages.nix-eval-jobs = pkgs.callPackage ./default.nix drvArgs;
-          packages.clangStdenv-nix-eval-jobs = pkgs.callPackage ./default.nix (
+          packages.nix-eval-jobs = nixDependencies.callPackage ./default.nix drvArgs;
+          packages.clangStdenv-nix-eval-jobs = nixDependencies.callPackage ./default.nix (
             drvArgs // { stdenv = pkgs.clangStdenv; }
           );
           packages.default = self'.packages.nix-eval-jobs;
-          devShells.default = pkgs.callPackage ./shell.nix drvArgs;
-          devShells.clang = pkgs.callPackage ./shell.nix (drvArgs // { stdenv = pkgs.clangStdenv; });
+          devShells.default = nixDependencies.callPackage ./shell.nix drvArgs;
+          devShells.clang = nixDependencies.callPackage ./shell.nix (
+            drvArgs // { stdenv = pkgs.clangStdenv; }
+          );
 
           checks = builtins.removeAttrs self'.packages [ "default" ] // {
             shell = self'.devShells.default;
