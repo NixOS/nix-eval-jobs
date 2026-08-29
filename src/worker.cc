@@ -230,15 +230,27 @@ auto collectAttrsForRecursion(nix::EvalState &state, nix::Value *value,
         args.forceRecurse ||
         path.empty(); // Don't require recurseForDerivations for top-level
 
-    for (auto &attr : value->attrs()->lexicographicOrder(state.symbols)) {
-        const std::string_view &name = state.symbols[attr->name];
-        attrs.emplace_back(name);
+    if (value->type() == nix::nAttrs) {
+        for (auto &attr : value->attrs()->lexicographicOrder(state.symbols)) {
+            const std::string_view &name = state.symbols[attr->name];
+            attrs.emplace_back(name);
 
-        if (!args.forceRecurse && name == "recurseForDerivations") {
-            const auto *attrv =
-                value->attrs()->get(nix::EvalState::s.recurseForDerivations);
-            recurse = state.forceBool(*attrv->value, attrv->pos,
-                                      "while evaluating recurseForDerivations");
+            if (!args.forceRecurse && name == "recurseForDerivations") {
+                const auto *attrv =
+                    value->attrs()->get(nix::EvalState::s.recurseForDerivations);
+                recurse = state.forceBool(*attrv->value, attrv->pos,
+                                        "while evaluating recurseForDerivations");
+            }
+        }
+
+        return recurse ? attrs : std::vector<std::string>{};
+    }
+    else if (value->type() == nix::nList) {
+        auto *list = value->listItems();
+
+        for (size_t i = 0; i < list->size(); ++i) {
+            // Use index as a string key
+            attrs.emplace_back(std::to_string(i));
         }
     }
 
