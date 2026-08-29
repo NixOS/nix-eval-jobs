@@ -42,6 +42,6 @@ nix_eval_jobs_dep = declare_dependency(
 executable(
   'nix-eval-jobs',
   'nix-eval-jobs.cc',
-  dependencies: [nix_eval_jobs_dep],
+  dependencies: [mimalloc_dep, nix_eval_jobs_dep],
   install: true,
 )
