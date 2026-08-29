@@ -29,6 +29,7 @@ stdenv.mkDerivation {
     nixComponents.nix-util-test-support
   ];
   buildInputs = with pkgs; [
+    mimalloc
     nlohmann_json
     boost
     curl
