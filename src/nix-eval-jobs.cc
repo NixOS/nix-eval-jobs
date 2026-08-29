@@ -170,7 +170,8 @@ auto parseResponse(std::string_view line)
    job is only dispatched while every running job plus the new one can
    still grow by `estimate` (decayed max of observed job RSS growth)
    within the budget. If the budget is exceeded anyway the largest busy
-   worker is SIGKILLed and its job retried alone ("solo"). Sizes in MiB. */
+   worker is SIGKILLed and its job queued for Mode::Solo: all workers are
+   torn down and a single fresh one retries it. Sizes in MiB. */
 class Scheduler {
   public:
     Scheduler(const MyArgs &args, const WorkerSpawnConfig &spawn,
@@ -189,15 +190,19 @@ class Scheduler {
     }
 
   private:
-    enum class Phase { None, Starting, Idle, Busy, Exiting };
+    /* Killed: we SIGKILLed it for exceeding the budget, EOF pending. */
+    enum class Phase { None, Starting, Idle, Busy, Killed, Exiting };
+    enum class Mode { Parallel, Solo };
     struct Worker {
         std::unique_ptr<Proc> proc;
         Phase phase = Phase::None;
         nlohmann::json attrPath;
-        bool solo = false;
-        bool evicted = false;
         size_t rss = 0;
         size_t startRss = 0;
+
+        [[nodiscard]] auto running() const -> bool {
+            return phase == Phase::Busy || phase == Phase::Killed;
+        }
 
         void sampleRss() { rss = proc ? residentMemoryMiB(proc->pid()) : 0; }
         [[nodiscard]] auto growth() const -> size_t {
@@ -214,22 +219,20 @@ class Scheduler {
     nix::Sync<JobMap> &jobs;
 
     std::set<nlohmann::json> todo;
-    /* Jobs evicted by the memory budget, retried with all other workers
-       idle. */
     std::vector<nlohmann::json> solo;
+    Mode mode = Mode::Parallel;
     const size_t budget;
     size_t estimate = INITIAL_ESTIMATE;
     std::vector<Worker> workers;
     std::chrono::steady_clock::time_point lastSample;
 
-    [[nodiscard]] auto finished() const -> bool {
-        return todo.empty() && solo.empty() && count(Phase::Busy) == 0;
+    [[nodiscard]] auto running() const -> size_t {
+        return static_cast<size_t>(std::ranges::count_if(
+            workers, [](const Worker &w) -> bool { return w.running(); }));
     }
 
-    [[nodiscard]] auto soloRunning() const -> bool {
-        return std::ranges::any_of(workers, [](const Worker &w) -> bool {
-            return w.phase == Phase::Busy && w.solo;
-        });
+    [[nodiscard]] auto finished() const -> bool {
+        return todo.empty() && solo.empty() && running() == 0;
     }
 
     [[nodiscard]] auto totalRss() const -> size_t {
@@ -258,27 +261,31 @@ class Scheduler {
     }
 
     auto takeJob(Worker &w) -> std::optional<nlohmann::json> {
-        if (soloRunning()) {
-            return std::nullopt;
+        if (running() > 0 && (mode == Mode::Solo || !solo.empty())) {
+            return std::nullopt; // one at a time / drain before Solo
         }
         std::optional<nlohmann::json> attrPath;
-        if (!solo.empty()) {
-            // Drain running jobs first, then retry alone.
-            if (count(Phase::Busy) > 0) {
-                return std::nullopt;
-            }
+        if (mode == Mode::Solo) {
             attrPath = solo.back();
             solo.pop_back();
-            w.solo = true;
-        } else if (!todo.empty() && fitsBudget()) {
+        } else if (solo.empty() && !todo.empty() && fitsBudget()) {
             attrPath = *todo.begin();
             todo.erase(todo.begin());
-            w.solo = false;
         } else {
             return std::nullopt;
         }
         w.startRss = w.rss;
         return attrPath;
+    }
+
+    /* Each retry runs on one fresh worker with nobody else's heap
+       around: drop every worker, dispatch() spawns one, and Solo ends
+       with that job so the next retry starts over. */
+    void enterSolo() {
+        for (auto &w : workers) {
+            w = Worker{};
+        }
+        mode = Mode::Solo;
     }
 
     void resetWorker(size_t idx) { workers[idx] = Worker{}; }
@@ -288,13 +295,13 @@ class Scheduler {
         estimate = std::max(estimate * DECAY_PERCENT / 100, w.growth());
         w.phase = Phase::Starting;
         w.attrPath = nullptr;
-        w.solo = false;
+        mode = Mode::Parallel;
     }
 
     void sampleMemory() {
         for (auto &w : workers) {
             w.sampleRss();
-            if (w.phase == Phase::Busy) {
+            if (w.running()) {
                 estimate = std::max(estimate, w.growth());
             }
         }
@@ -304,7 +311,7 @@ class Scheduler {
         }
         Worker *victim = nullptr;
         for (auto &w : workers) {
-            if (w.phase == Phase::Busy && !w.evicted &&
+            if (w.phase == Phase::Busy &&
                 (victim == nullptr || w.rss > victim->rss)) {
                 victim = &w;
             }
@@ -318,14 +325,24 @@ class Scheduler {
                      "killing worker %d ('%s', %d MiB)",
                      budget, total, victim->proc->pid(),
                      joinAttrPath(victim->attrPath), victim->rss));
-        victim->evicted = true;
+        victim->phase = Phase::Killed;
         kill(victim->proc->pid(), SIGKILL);
     }
 
     void dispatch() {
-        /* Don't spawn more workers than there are jobs to hand out. */
-        size_t spawnable = solo.empty() ? todo.size() : 1;
-        spawnable -= std::min(spawnable, count(Phase::Starting));
+        /* Don't spawn more workers than there are jobs to hand out. In
+           Solo mode exactly one worker may exist at all. */
+        if (mode == Mode::Parallel && !solo.empty() && running() == 0) {
+            enterSolo();
+        }
+        size_t spawnable = 0;
+        if (mode == Mode::Solo) {
+            spawnable = anyWorkerAlive() ? 0 : 1;
+        } else if (solo.empty()) {
+            spawnable = todo.size();
+            spawnable -= std::min(spawnable,
+                                  count(Phase::Starting) + count(Phase::Idle));
+        }
 
         for (size_t idx = 0; idx < workers.size(); idx++) {
             Worker &w = workers[idx];
@@ -414,6 +431,7 @@ class Scheduler {
         case Phase::Busy:
             onResponse(idx, line);
             break;
+        case Phase::Killed: // finished before the signal landed, retried anyway
         case Phase::Exiting:
             break;
         default:
@@ -452,9 +470,8 @@ class Scheduler {
             return;
         }
         const std::string doing =
-            w.phase == Phase::Busy
-                ? "evaluating '" + joinAttrPath(w.attrPath) + "'"
-                : "starting worker";
+            w.running() ? "evaluating '" + joinAttrPath(w.attrPath) + "'"
+                        : "starting worker";
         try {
             w.proc->throwExited(doing);
         } catch (WorkerKilled &) {
@@ -464,15 +481,15 @@ class Scheduler {
 
     void onKilled(size_t idx) {
         Worker &w = workers[idx];
-        if (!w.evicted) {
+        if (w.phase != Phase::Killed) {
             nix::logger->log(
                 nix::lvlError,
                 nix::fmt("evaluation worker %d was killed (system out of "
                          "memory?)",
                          w.proc->pid()));
         }
-        if (w.phase == Phase::Busy) {
-            if (w.solo) {
+        if (w.running()) {
+            if (mode == Mode::Solo) {
                 emitError(jobs, w.attrPath,
                           nix::fmt("evaluation exceeded the memory budget of "
                                    "%d MiB (workers * max-memory-size) even "
@@ -483,6 +500,7 @@ class Scheduler {
             }
         }
         resetWorker(idx);
+        mode = Mode::Parallel;
     }
 };
 
