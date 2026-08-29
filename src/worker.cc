@@ -37,7 +37,6 @@
 #include <nix/expr/value.hh>
 #include <nix/expr/value/context.hh>
 #include <nlohmann/json_fwd.hpp>
-#include <numeric>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -118,18 +117,6 @@ auto evaluateFlake(const nix::ref<nix::EvalState> &state, const MyArgs &args)
     }
     // Fragment specified, use normal evaluation
     return flake.toValue(*state).first;
-}
-
-auto attrPathJoin(nlohmann::json input) -> std::string {
-    return std::accumulate(
-        input.begin(), input.end(), std::string(),
-        [](const std::string &acc, std::string str) -> std::basic_string<char> {
-            // Escape token if containing dots
-            if (str.find('.') != std::string::npos) {
-                str = "\"" + str + "\"";
-            }
-            return acc.empty() ? str : acc + "." + str;
-        });
 }
 
 auto extractConstituents(nix::EvalState &state, nix::Value *value,
@@ -360,7 +347,7 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
     }
 
     auto path = nlohmann::json::parse(line.substr(MSG_DO.size()));
-    auto attrPathS = attrPathJoin(path);
+    auto attrPathS = joinAttrPath(path);
 
     /* Evaluate it and send info back to the collector. */
     Response::Payload payload = [&]() -> Response::Payload {
