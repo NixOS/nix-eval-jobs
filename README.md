@@ -107,8 +107,8 @@ we collect example ci configuration for various CIs.
 - [nix-fast-build](https://github.com/Mic92/nix-fast-build) - Combine the power
   of nix-eval-jobs with nix-output-monitor to speed-up your evaluation and
   building process
-- [buildbot-nix](https://github.com/Mic92/buildbot-nix) - A nixos module to make
-  buildbot a proper Nix-CI
+- [nixbot](https://github.com/Mic92/nixbot) - Standalone Nix CI service for
+  NixOS
 - [colmena](https://github.com/zhaofengli/colmena) - A simple, stateless NixOS
   deployment tool
 - [robotnix](https://github.com/danielfullmer/robotnix) - Build Android (AOSP)
