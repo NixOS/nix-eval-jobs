@@ -78,8 +78,13 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
 
     addFlag({
         .longName = "max-memory-size",
-        .description = "maximum evaluation memory size in megabyte "
-                       "(4GiB per worker by default)",
+        .description =
+            "memory per worker in MiB (4GiB by default). workers * "
+            "max-memory-size is enforced as a budget for all workers "
+            "combined: jobs are only dispatched while it has room, a "
+            "worker above its share is restarted after its job, and if "
+            "the budget is exceeded anyway the largest worker is killed "
+            "and its job retried alone.",
         .labels = {"size"},
         .handler = {[this](const std::string &str) -> void {
             maxMemorySize = std::stoi(str);

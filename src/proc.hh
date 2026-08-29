@@ -1,6 +1,7 @@
 #pragma once
 ///@file
 
+#include <exception>
 #include <nix/util/file-descriptor.hh>
 #include <nix/util/processes.hh>
 #include <optional>
@@ -13,6 +14,8 @@ struct WorkerSpawnConfig {
     /* First line sent to every worker. */
     std::string config = "{}";
 };
+
+struct WorkerKilled : std::exception {};
 
 /* A worker: our own binary spawned with --worker so it starts from a
    clean process (no inherited logger/FileTransfer state). The read side
@@ -36,7 +39,8 @@ class Proc {
     [[nodiscard]] auto fill() -> bool;
     auto popLine() -> std::optional<std::string>;
 
-    /* Reap a worker whose pipe closed and throw a matching error. */
+    /* Reap a worker whose pipe closed and throw a matching error, or
+       WorkerKilled for SIGKILL. */
     [[noreturn]] void throwExited(std::string_view doing);
 
   private:

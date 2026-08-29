@@ -136,9 +136,7 @@ void Proc::throwExited(std::string_view doing) {
     }
     if (WIFSIGNALED(status)) {
         if (WTERMSIG(status) == SIGKILL) {
-            throw nix::Error("while %s, evaluation worker got killed by "
-                             "SIGKILL, maybe memory limit reached?",
-                             doing);
+            throw WorkerKilled();
         }
         throw nix::Error("while %s, evaluation worker crashed with signal %d "
                          "(%s); enable coredumps for a backtrace",

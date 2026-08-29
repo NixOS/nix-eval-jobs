@@ -1,8 +1,10 @@
 // NOLINTNEXTLINE(modernize-deprecated-headers) misc-include-cleaner wants this
 // for setenv
 #include <stdlib.h>
+#include <chrono>
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <poll.h>
 #include <cstdlib>
 #include <exception>
@@ -51,6 +53,7 @@
 #include "crash-handler.hh"
 #include "store.hh"
 #include "cache-status-resolver.hh"
+#include "rss.hh"
 #include "proc.hh"
 
 namespace {
@@ -137,6 +140,17 @@ void emitResponse(nix::Sync<JobMap> &jobs, const Response &response) {
     emitResponse(jobs, response, std::move(json), dumped);
 }
 
+void emitError(nix::Sync<JobMap> &jobs, const nlohmann::json &attrPath,
+               const std::string &msg) {
+    const Response response{
+        .attr = joinAttrPath(attrPath),
+        .attrPath = attrPath.get<std::vector<std::string>>(),
+        .payload = Response::Error{msg},
+    };
+    nix::logger->log(nix::lvlError, msg + ": " + response.attr);
+    emitResponse(jobs, response);
+}
+
 auto parseResponse(std::string_view line)
     -> std::pair<Response, nlohmann::json> {
     try {
@@ -150,13 +164,19 @@ auto parseResponse(std::string_view line)
 }
 
 /* Single-threaded event loop over the worker pipes: spawns workers,
-   hands out jobs and collects results. */
+   hands out jobs and collects results.
+
+   Memory: workers * max-memory-size is one budget for all workers. A
+   job is only dispatched while every running job plus the new one can
+   still grow by `estimate` (decayed max of observed job RSS growth)
+   within the budget. If the budget is exceeded anyway the largest busy
+   worker is SIGKILLed and its job retried alone ("solo"). Sizes in MiB. */
 class Scheduler {
   public:
     Scheduler(const MyArgs &args, const WorkerSpawnConfig &spawn,
               CacheStatusResolver *cacheStatusResolver, nix::Sync<JobMap> &jobs)
         : spawn(spawn), cacheStatusResolver(cacheStatusResolver), jobs(jobs),
-          workers(args.nrWorkers) {
+          budget(args.nrWorkers * args.maxMemorySize), workers(args.nrWorkers) {
         todo.insert(nlohmann::json::array());
     }
 
@@ -174,17 +194,55 @@ class Scheduler {
         std::unique_ptr<Proc> proc;
         Phase phase = Phase::None;
         nlohmann::json attrPath;
+        bool solo = false;
+        bool evicted = false;
+        size_t rss = 0;
+        size_t startRss = 0;
+
+        void sampleRss() { rss = proc ? residentMemoryMiB(proc->pid()) : 0; }
+        [[nodiscard]] auto growth() const -> size_t {
+            return rss > startRss ? rss - startRss : 0;
+        }
     };
+
+    static constexpr auto SAMPLE_INTERVAL = std::chrono::milliseconds(200);
+    static constexpr size_t INITIAL_ESTIMATE = 512;
+    static constexpr size_t DECAY_PERCENT = 98;
 
     const WorkerSpawnConfig &spawn;
     CacheStatusResolver *cacheStatusResolver;
     nix::Sync<JobMap> &jobs;
 
     std::set<nlohmann::json> todo;
+    /* Jobs evicted by the memory budget, retried with all other workers
+       idle. */
+    std::vector<nlohmann::json> solo;
+    const size_t budget;
+    size_t estimate = INITIAL_ESTIMATE;
     std::vector<Worker> workers;
+    std::chrono::steady_clock::time_point lastSample;
 
     [[nodiscard]] auto finished() const -> bool {
-        return todo.empty() && count(Phase::Busy) == 0;
+        return todo.empty() && solo.empty() && count(Phase::Busy) == 0;
+    }
+
+    [[nodiscard]] auto soloRunning() const -> bool {
+        return std::ranges::any_of(workers, [](const Worker &w) -> bool {
+            return w.phase == Phase::Busy && w.solo;
+        });
+    }
+
+    [[nodiscard]] auto totalRss() const -> size_t {
+        size_t sum = residentMemoryMiB(getpid());
+        for (const auto &w : workers) {
+            sum += w.rss;
+        }
+        return sum;
+    }
+
+    [[nodiscard]] auto fitsBudget() const -> bool {
+        const size_t busy = count(Phase::Busy);
+        return busy == 0 || totalRss() + (busy + 1) * estimate <= budget;
     }
 
     [[nodiscard]] auto anyWorkerAlive() const -> bool {
@@ -199,20 +257,74 @@ class Scheduler {
             }));
     }
 
-    auto takeJob() -> std::optional<nlohmann::json> {
-        if (todo.empty()) {
+    auto takeJob(Worker &w) -> std::optional<nlohmann::json> {
+        if (soloRunning()) {
             return std::nullopt;
         }
-        auto attrPath = *todo.begin();
-        todo.erase(todo.begin());
+        std::optional<nlohmann::json> attrPath;
+        if (!solo.empty()) {
+            // Drain running jobs first, then retry alone.
+            if (count(Phase::Busy) > 0) {
+                return std::nullopt;
+            }
+            attrPath = solo.back();
+            solo.pop_back();
+            w.solo = true;
+        } else if (!todo.empty() && fitsBudget()) {
+            attrPath = *todo.begin();
+            todo.erase(todo.begin());
+            w.solo = false;
+        } else {
+            return std::nullopt;
+        }
+        w.startRss = w.rss;
         return attrPath;
     }
 
     void resetWorker(size_t idx) { workers[idx] = Worker{}; }
 
+    void jobFinished(Worker &w) {
+        w.sampleRss();
+        estimate = std::max(estimate * DECAY_PERCENT / 100, w.growth());
+        w.phase = Phase::Starting;
+        w.attrPath = nullptr;
+        w.solo = false;
+    }
+
+    void sampleMemory() {
+        for (auto &w : workers) {
+            w.sampleRss();
+            if (w.phase == Phase::Busy) {
+                estimate = std::max(estimate, w.growth());
+            }
+        }
+        const size_t total = totalRss();
+        if (total <= budget) {
+            return;
+        }
+        Worker *victim = nullptr;
+        for (auto &w : workers) {
+            if (w.phase == Phase::Busy && !w.evicted &&
+                (victim == nullptr || w.rss > victim->rss)) {
+                victim = &w;
+            }
+        }
+        if (victim == nullptr) {
+            return;
+        }
+        nix::logger->log(
+            nix::lvlInfo,
+            nix::fmt("memory budget of %d MiB exceeded (%d MiB in use), "
+                     "killing worker %d ('%s', %d MiB)",
+                     budget, total, victim->proc->pid(),
+                     joinAttrPath(victim->attrPath), victim->rss));
+        victim->evicted = true;
+        kill(victim->proc->pid(), SIGKILL);
+    }
+
     void dispatch() {
         /* Don't spawn more workers than there are jobs to hand out. */
-        size_t spawnable = todo.size();
+        size_t spawnable = solo.empty() ? todo.size() : 1;
         spawnable -= std::min(spawnable, count(Phase::Starting));
 
         for (size_t idx = 0; idx < workers.size(); idx++) {
@@ -221,7 +333,7 @@ class Scheduler {
                 (void)w.proc->sendLine(MSG_EXIT);
                 w.phase = Phase::Exiting;
             } else if (w.phase == Phase::Idle) {
-                if (auto attrPath = takeJob()) {
+                if (auto attrPath = takeJob(w)) {
                     w.attrPath = std::move(*attrPath);
                     w.phase = Phase::Busy;
                     if (!w.proc->sendLine(std::string(MSG_DO) +
@@ -232,6 +344,7 @@ class Scheduler {
             } else if (w.phase == Phase::None && spawnable > 0 && !finished()) {
                 w.proc = std::make_unique<Proc>(spawn);
                 w.phase = Phase::Starting;
+                w.sampleRss();
                 spawnable--;
             }
         }
@@ -248,9 +361,16 @@ class Scheduler {
                 owner.push_back(idx);
             }
         }
-        const int n = poll(fds.data(), fds.size(), -1);
+        const int n = poll(fds.data(), fds.size(),
+                           static_cast<int>(SAMPLE_INTERVAL.count()));
         if (n == -1 && errno != EINTR) {
             throw nix::SysError("polling workers");
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastSample >= SAMPLE_INTERVAL) {
+            sampleMemory();
+            lastSample = now;
         }
 
         for (size_t i = 0; i < fds.size(); i++) {
@@ -322,8 +442,7 @@ class Scheduler {
             }
         }
 
-        workers[idx].phase = Phase::Starting;
-        workers[idx].attrPath = nullptr;
+        jobFinished(workers[idx]);
     }
 
     void onEof(size_t idx) {
@@ -332,10 +451,38 @@ class Scheduler {
             resetWorker(idx);
             return;
         }
-        w.proc->throwExited(w.phase == Phase::Busy
-                                ? "evaluating '" + joinAttrPath(w.attrPath) +
-                                      "'"
-                                : "starting worker");
+        const std::string doing =
+            w.phase == Phase::Busy
+                ? "evaluating '" + joinAttrPath(w.attrPath) + "'"
+                : "starting worker";
+        try {
+            w.proc->throwExited(doing);
+        } catch (WorkerKilled &) {
+            onKilled(idx);
+        }
+    }
+
+    void onKilled(size_t idx) {
+        Worker &w = workers[idx];
+        if (!w.evicted) {
+            nix::logger->log(
+                nix::lvlError,
+                nix::fmt("evaluation worker %d was killed (system out of "
+                         "memory?)",
+                         w.proc->pid()));
+        }
+        if (w.phase == Phase::Busy) {
+            if (w.solo) {
+                emitError(jobs, w.attrPath,
+                          nix::fmt("evaluation exceeded the memory budget of "
+                                   "%d MiB (workers * max-memory-size) even "
+                                   "when run alone",
+                                   budget));
+            } else {
+                solo.push_back(w.attrPath);
+            }
+        }
+        resetWorker(idx);
     }
 };
 
