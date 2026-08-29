@@ -106,6 +106,21 @@
               brokenPkgs = {
                 brokenPackage = throw "this is an evaluation error";
               };
+              loggingPkgs =
+                let
+                  mk =
+                    name:
+                    derivation {
+                      inherit name system;
+                      builder = "/bin/sh";
+                    };
+                in
+                {
+                  warns = builtins.warn "first warning" (builtins.warn "second warning" (mk "warns"));
+                  traces = builtins.trace "hello from trace" (mk "traces");
+                  quiet = mk "quiet";
+                  warnThenThrow = builtins.warn "about to fail" (throw "failed");
+                };
               infiniteRecursionPkgs = {
                 packageWithInfiniteRecursion =
                   let

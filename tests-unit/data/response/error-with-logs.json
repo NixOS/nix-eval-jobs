@@ -1,0 +1,15 @@
+{
+  "attr": "broken",
+  "attrPath": [
+    "broken"
+  ],
+  "error": "evaluation failed",
+  "fatal": false,
+  "traces": [
+    "got here"
+  ],
+  "warnings": [
+    "deprecated",
+    "also deprecated"
+  ]
+}
