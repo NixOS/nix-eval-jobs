@@ -1,4 +1,7 @@
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
+#include <string_view>
 #include <nix/util/json-utils.hh>
 #include <nix/util/util.hh> // for overloaded
 #include <nlohmann/json_fwd.hpp>
@@ -12,14 +15,43 @@
 #include "response.hh"
 #include "drv.hh"
 
+namespace {
+auto isPlainIdentifier(std::string_view s) -> bool {
+    if (s.empty()) {
+        return false;
+    }
+    auto first = static_cast<unsigned char>(s.front());
+    if (!(std::isalpha(first) || first == '_')) {
+        return false;
+    }
+    return std::ranges::all_of(s, [](unsigned char c) {
+        return std::isalnum(c) || c == '_' || c == '\'' || c == '-';
+    });
+}
+} // namespace
+
+/* Quoted like Nix prints attribute names. Never parsed back. */
 auto joinAttrPath(const nlohmann::json &attrPath) -> std::string {
     std::string joined;
+    bool first = true;
     for (const auto &element : attrPath) {
-        auto part = element.get<std::string>();
-        if (part.find('.') != std::string::npos) {
-            part = "\"" + part + "\"";
+        const auto part = element.get<std::string>();
+        if (!first) {
+            joined += '.';
         }
-        joined += joined.empty() ? part : "." + part;
+        first = false;
+        if (isPlainIdentifier(part)) {
+            joined += part;
+            continue;
+        }
+        joined += '"';
+        for (const char c : part) {
+            if (c == '"' || c == '\\' || c == '$') {
+                joined += '\\';
+            }
+            joined += c;
+        }
+        joined += '"';
     }
     return joined;
 }

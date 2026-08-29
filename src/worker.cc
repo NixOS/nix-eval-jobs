@@ -3,7 +3,6 @@
 #include <nix/expr/eval-error.hh>
 #include <nix/util/pos-idx.hh>
 #include <nix/util/terminal.hh>
-#include <nix/expr/attr-path.hh>
 #include <nix/store/local-fs-store.hh>
 #include <nix/store/globals.hh>
 #include <nix/cmd/installable-flake.hh>
@@ -16,6 +15,7 @@
 // misc-include-cleaner wants this header rather than the C++ version
 #include <stdlib.h>
 // NOLINTEND(modernize-deprecated-headers)
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <nix/expr/attr-set.hh>
@@ -304,14 +304,37 @@ struct Evaluator {
     nix::Value *vRoot;
     MyArgs &args;
 
+    /* An attrset reachable from itself would make the collector recurse
+       forever. */
+    auto select(const nlohmann::json &path) -> nix::Value * {
+        std::vector<const nix::Bindings *> ancestors;
+        auto *v = state.allocValue();
+        state.autoCallFunction(autoArgs, *vRoot, *v);
+        for (const auto &component : path) {
+            const auto name = component.get<std::string>();
+            state.forceAttrs(*v, nix::noPos, "while selecting an attribute");
+            ancestors.push_back(v->attrs());
+            const auto *attr = v->attrs()->get(state.symbols.create(name));
+            if (attr == nullptr) {
+                throw nix::EvalError(state, "attribute '%s' missing", name);
+            }
+            auto *next = state.allocValue();
+            state.autoCallFunction(autoArgs, *attr->value, *next);
+            v = next;
+        }
+        state.forceValue(*v, nix::noPos);
+        if (v->type() == nix::nAttrs &&
+            std::ranges::find(ancestors, v->attrs()) != ancestors.end()) {
+            throw nix::EvalError(state,
+                                 "attribute set contains itself (cycle)");
+        }
+        return v;
+    }
+
     auto evaluate(const nlohmann::json &path) -> Response::Payload {
         auto attrPathS = joinAttrPath(path);
         try {
-            auto *vTmp =
-                nix::findAlongAttrPath(state, attrPathS, autoArgs, *vRoot)
-                    .first;
-            auto *value = state.allocValue();
-            state.autoCallFunction(autoArgs, *vTmp, *value);
+            auto *value = select(path);
             if (value->type() != nix::nAttrs) {
                 return Response::Attrs{{}}; // not buildable, ignore
             }
