@@ -133,6 +133,20 @@ def test_odd_attribute_names_and_cycles() -> None:
     assert "cycle.again.ok" not in results
 
 
+def test_closed_stdout_aborts() -> None:
+    proc = subprocess.Popen(
+        [str(BIN), "--workers", "1", str(TEST_ROOT / "assets" / "odd-names.nix")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    proc.stdout.close()
+    _, stderr = proc.communicate(timeout=60)
+    assert proc.returncode != 0
+    assert "stdout" in stderr
+
+
 def test_eval_error() -> None:
     with TemporaryDirectory() as tempdir:
         cmd = [
