@@ -8,7 +8,8 @@ common_src = [
   'worker.cc',
   'output-stream-lock.cc',
   'cache-status-resolver.cc',
-  'daemon-settings.cc'
+  'daemon-settings.cc',
+  'rss.cc',
 ]
 
 common_deps = [

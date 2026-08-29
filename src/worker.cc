@@ -1,5 +1,4 @@
 // doesn't exist on macOS
-// IWYU pragma: no_include <bits/types/struct_rusage.h>
 
 #include <nix/expr/eval-error.hh>
 #include <nix/util/pos-idx.hh>
@@ -9,7 +8,7 @@
 #include <nix/store/globals.hh>
 #include <nix/cmd/installable-flake.hh>
 #include <nix/expr/value-to-json.hh>
-#include <sys/resource.h>
+#include <unistd.h>
 #include <nlohmann/json.hpp>
 #include <cstdio>
 #include <iostream>
@@ -51,6 +50,7 @@
 #include "buffered-io.hh"
 #include "eval-args.hh"
 #include "store.hh"
+#include "rss.hh"
 
 namespace nix {
 struct Expr;
@@ -295,16 +295,7 @@ auto initializeRootValue(const nix::ref<nix::EvalState> &state,
 }
 
 auto shouldRestart(const MyArgs &args) -> bool {
-    struct rusage resourceUsage = {}; // NOLINT(misc-include-cleaner)
-    getrusage(RUSAGE_SELF, &resourceUsage);
-    size_t maxrss =
-        resourceUsage
-            .ru_maxrss; // NOLINT(cppcoreguidelines-pro-type-union-access)
-    static constexpr size_t KB_TO_BYTES = 1024;
-#ifdef __APPLE__
-    maxrss /= KB_TO_BYTES; // ru_maxrss is bytes on macOS instead of KiB
-#endif
-    return maxrss > args.maxMemorySize * KB_TO_BYTES;
+    return residentMemoryMiB(getpid()) > args.maxMemorySize;
 }
 
 struct Evaluator {
