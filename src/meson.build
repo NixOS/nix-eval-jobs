@@ -1,5 +1,6 @@
 common_src = [
   'eval-args.cc',
+  'eval-log.cc',
   'drv.cc',
   'response.cc',
   'buffered-io.cc',

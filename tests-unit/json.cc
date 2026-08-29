@@ -290,6 +290,16 @@ INSTANTIATE_TEST_SUITE_P(
                 .attrPath = {"broken"},
                 .payload = Response::Error{.error = "evaluation failed"},
             },
+        },
+        std::pair{
+            "error-with-logs",
+            Response{
+                .attr = "broken",
+                .attrPath = {"broken"},
+                .payload = Response::Error{.error = "evaluation failed"},
+                .warnings = {"deprecated", "also deprecated"},
+                .traces = {"got here"},
+            },
         }));
 
 // NOLINTEND(google-readability-avoid-underscore-in-googletest-name)

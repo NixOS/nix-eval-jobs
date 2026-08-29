@@ -136,6 +136,33 @@ def test_eval_error() -> None:
         assert "this is an evaluation error" in attrs["error"]
 
 
+def test_eval_logs_per_attr() -> None:
+    cmd = [
+        str(BIN),
+        "--workers",
+        "1",
+        *COMMON_FLAGS,
+        "--flake",
+        ".#legacyPackages.x86_64-linux.loggingPkgs",
+    ]
+    res = subprocess.run(
+        cmd,
+        cwd=TEST_ROOT.joinpath("assets"),
+        text=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    results = {r["attr"]: r for r in map(json.loads, res.stdout.splitlines())}
+    assert results["warns"]["warnings"] == ["first warning", "second warning"]
+    assert "traces" not in results["warns"]
+    assert results["traces"]["traces"] == ["hello from trace"]
+    assert "warnings" not in results["traces"]
+    assert "warnings" not in results["quiet"]
+    assert "traces" not in results["quiet"]
+    assert results["warnThenThrow"]["warnings"] == ["about to fail"]
+    assert "failed" in results["warnThenThrow"]["error"]
+
+
 def test_no_gcroot_dir() -> None:
     cmd = [
         str(BIN),

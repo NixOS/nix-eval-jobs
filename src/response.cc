@@ -38,6 +38,12 @@ void adl_serializer<Response>::to_json(json &res, const Response &response) {
         {"attr", response.attr},
         {"attrPath", response.attrPath},
     };
+    if (!response.warnings.empty()) {
+        res["warnings"] = response.warnings;
+    }
+    if (!response.traces.empty()) {
+        res["traces"] = response.traces;
+    }
 
     std::visit(overloaded{
                    [&](const Response::Job &job) -> void {
@@ -64,11 +70,18 @@ auto adl_serializer<Response>::from_json(const json &_json) -> Response {
     auto attr = getString(valueAt(json, "attr"));
     std::vector<std::string> attrPath = valueAt(json, "attrPath");
 
+    auto stringList = [&](const char *key) -> std::vector<std::string> {
+        const auto *v = get(json, key);
+        return v ? v->get<std::vector<std::string>>()
+                 : std::vector<std::string>{};
+    };
     auto makeResponse = [&](Response::Payload payload) -> Response {
         return Response{
             .attr = std::move(attr),
             .attrPath = std::move(attrPath),
             .payload = std::move(payload),
+            .warnings = stringList("warnings"),
+            .traces = stringList("traces"),
         };
     };
 

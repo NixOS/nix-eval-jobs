@@ -49,6 +49,7 @@
 #include "response.hh"
 #include "buffered-io.hh"
 #include "eval-args.hh"
+#include "eval-log.hh"
 #include "store.hh"
 #include "rss.hh"
 
@@ -303,6 +304,7 @@ struct Evaluator {
     nix::Bindings &autoArgs;
     nix::Value *vRoot;
     MyArgs &args;
+    EvalLogCapture &logCapture;
 
     auto evaluate(const nlohmann::json &path) -> Response::Payload {
         auto attrPathS = joinAttrPath(path);
@@ -351,10 +353,15 @@ auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
     }
     auto path = nlohmann::json::parse(line.substr(MSG_DO.size()));
 
+    evaluator.logCapture.take(); // drop noise from between jobs
+    auto payload = evaluator.evaluate(path);
+    auto logs = evaluator.logCapture.take();
     const Response response{
         .attr = joinAttrPath(path),
         .attrPath = path.get<std::vector<std::string>>(),
-        .payload = evaluator.evaluate(path),
+        .payload = std::move(payload),
+        .warnings = std::move(logs.warnings),
+        .traces = std::move(logs.traces),
     };
     if (tryWriteLine(toParent.get(), nlohmann::json(response).dump()) < 0) {
         return false;
@@ -404,6 +411,7 @@ void worker(
         .autoArgs = autoArgs,
         .vRoot = initializeRootValue(state, autoArgs, args),
         .args = args,
+        .logCapture = EvalLogCapture::install(),
     };
 
     while (processJobRequest(evaluator, fromReader, toParent)) {

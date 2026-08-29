@@ -128,6 +128,14 @@ If you provide the `--check-cache-status`, the json will contain a
 | cached   | Package is present in the binary cache, but not locally |
 | notBuilt | Package needs to be built.                              |
 
+### Where do evaluation warnings and traces end up?
+
+Messages from `builtins.warn` and `builtins.trace` are printed to stderr as
+usual and additionally attached to the JSON line of the attribute that was being
+evaluated, as `"warnings": [...]` and `"traces": [...]` (omitted when empty).
+Because Nix evaluates shared values only once, a message from code shared
+between attributes is reported on whichever attribute forced it first.
+
 ### How can I evaluate nixpkgs?
 
 If you want to evaluate nixpkgs in the same way

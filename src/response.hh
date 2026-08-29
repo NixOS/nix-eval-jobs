@@ -47,6 +47,12 @@ struct Response {
     using Payload = std::variant<Job, Attrs, Error>;
     Payload payload;
 
+    /* builtins.warn / builtins.trace output emitted while evaluating this
+       attribute. Shared thunks only log the first time they are forced,
+       so a message shows up on whichever attribute got there first. */
+    std::vector<std::string> warnings = {};
+    std::vector<std::string> traces = {};
+
     bool operator==(const Response &) const = default;
 };
 
