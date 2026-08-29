@@ -951,8 +951,7 @@ def test_fetchers_survive_worker_restart(tmp_path: Path) -> None:
 
 
 def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
-    """Workers fetching the same flake input concurrently spam "waiting
-    for another Nix process to finish fetching input" (issue #432)."""
+    """A detached flake is fetched once before the workers start."""
     env = _hermetic_nix_env(tmp_path)
     repo = tmp_path / "flake"
     repo.mkdir()
@@ -966,7 +965,7 @@ def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
         for i in range(8)
     )
     repo.joinpath("flake.nix").write_text(f"{{ outputs = _: {{ hydraJobs = {{ {jobs} }}; }}; }}")
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, env=env)
     subprocess.run(["git", "add", "flake.nix"], cwd=repo, check=True, env=env)
     subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
@@ -974,6 +973,8 @@ def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
         check=True,
         env=env,
     )
+    subprocess.run(["git", "checkout", "--detach", "-q"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "branch", "-D", "main"], cwd=repo, check=True, env=env)
 
     res = subprocess.run(
         [
@@ -984,7 +985,7 @@ def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
             "8",
             *COMMON_FLAGS,
             "--flake",
-            f"git+file://{repo}#hydraJobs",
+            f"{repo}#hydraJobs",
         ],
         env=env,
         text=True,

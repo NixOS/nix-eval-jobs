@@ -411,6 +411,16 @@ auto prefetchFlake(MyArgs &args) -> std::optional<std::string> {
     if (!lockedRef.input.isFinal() || !lockedRef.input.getNarHash()) {
         return std::nullopt;
     }
+
+    auto attrs = lockedRef.input.toAttrs();
+    if (nix::fetchers::maybeGetStrAttr(attrs, "type") == "git" &&
+        !attrs.contains("ref")) {
+        /* The revision pins the input, so HEAD will not be resolved. */
+        attrs.emplace("ref", "HEAD");
+        lockedRef.input = nix::fetchers::Input::fromAttrs(nix::fetchSettings,
+                                                          std::move(attrs));
+    }
+
     lockedRef.input =
         lockedRef.input.fetchToStore(nix::fetchSettings, *state->store).second;
     return nix::fetchers::attrsToJSON(lockedRef.toAttrs()).dump();
