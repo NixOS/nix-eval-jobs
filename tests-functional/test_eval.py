@@ -147,6 +147,16 @@ def test_closed_stdout_aborts() -> None:
     assert "stdout" in stderr
 
 
+@pytest.mark.parametrize(
+    "flag",
+    [["--workers", "0"], ["--workers", "2x"], ["--workers", "-1"], ["--max-memory-size", "0"]],
+)
+def test_rejects_bad_numeric_flags(flag: list[str]) -> None:
+    res = run_plain("ci.nix", *flag)
+    assert res.returncode != 0
+    assert flag[0] in res.stderr
+
+
 def test_eval_error() -> None:
     with TemporaryDirectory() as tempdir:
         cmd = [
