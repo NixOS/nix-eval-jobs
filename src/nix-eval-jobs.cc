@@ -370,6 +370,8 @@ class Scheduler {
     void pollWorkers() {
         std::vector<pollfd> fds;
         std::vector<size_t> owner;
+        fds.reserve(workers.size());
+        owner.reserve(workers.size());
         for (size_t idx = 0; idx < workers.size(); idx++) {
             if (workers[idx].proc) {
                 fds.push_back({.fd = workers[idx].proc->readFd(),
@@ -378,8 +380,12 @@ class Scheduler {
                 owner.push_back(idx);
             }
         }
-        const int n = poll(fds.data(), fds.size(),
-                           static_cast<int>(SAMPLE_INTERVAL.count()));
+        constexpr auto timeoutMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                SAMPLE_INTERVAL)
+                .count();
+        static_assert(std::in_range<int>(timeoutMs));
+        const int n = poll(fds.data(), fds.size(), static_cast<int>(timeoutMs));
         if (n == -1 && errno != EINTR) {
             throw nix::SysError("polling workers");
         }
@@ -392,7 +398,7 @@ class Scheduler {
 
         for (size_t i = 0; i < fds.size(); i++) {
             if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
-                readWorker(owner[i]);
+                readWorker(owner.at(i));
             }
         }
     }
@@ -421,9 +427,11 @@ class Scheduler {
                 resetWorker(idx);
             } else {
                 auto json = nlohmann::json::parse(line, nullptr, false);
-                if (json.is_object() && json.contains("error")) {
-                    throw nix::Error("worker error: %s",
-                                     std::string(json["error"]));
+                if (json.is_object()) {
+                    if (auto err = json.value("error", std::string{});
+                        !err.empty()) {
+                        throw nix::Error("worker error: %s", err);
+                    }
                 }
                 throw nix::Error("unexpected line from worker: '%s'", line);
             }

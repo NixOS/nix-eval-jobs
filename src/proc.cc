@@ -4,6 +4,8 @@
 #include <string.h>
 // NOLINTEND(modernize-deprecated-headers)
 #include <cerrno>
+#include <initializer_list>
+#include <memory>
 #include <cstddef>
 #include <fcntl.h>
 #include <nix/util/current-process.hh>
@@ -57,14 +59,22 @@ Proc::Proc(const WorkerSpawnConfig &spawn) {
     }
 
     posix_spawn_file_actions_t fileActions;
-    posix_spawn_file_actions_init(&fileActions);
-    posix_spawn_file_actions_adddup2(&fileActions, outFd.get(), WORKER_OUT_FD);
-    posix_spawn_file_actions_adddup2(&fileActions, inFd.get(), WORKER_IN_FD);
+    if (const int err = posix_spawn_file_actions_init(&fileActions)) {
+        throw nix::SysError(err, "setting up worker spawn");
+    }
+    const std::unique_ptr<posix_spawn_file_actions_t,
+                          decltype(&posix_spawn_file_actions_destroy)>
+        fileActionsGuard(&fileActions, &posix_spawn_file_actions_destroy);
+    for (auto [from, to] : {std::pair{outFd.get(), WORKER_OUT_FD},
+                            std::pair{inFd.get(), WORKER_IN_FD}}) {
+        if (const int err =
+                posix_spawn_file_actions_adddup2(&fileActions, from, to)) {
+            throw nix::SysError(err, "setting up worker spawn");
+        }
+    }
     pid_t childPid = -1;
-    const int err = posix_spawn(&childPid, selfExe.c_str(), &fileActions,
-                                nullptr, execArgv.data(), environ);
-    posix_spawn_file_actions_destroy(&fileActions);
-    if (err != 0) {
+    if (const int err = posix_spawn(&childPid, selfExe.c_str(), &fileActions,
+                                    nullptr, execArgv.data(), environ)) {
         throw nix::SysError(err, "spawning worker process");
     }
     proc = childPid;

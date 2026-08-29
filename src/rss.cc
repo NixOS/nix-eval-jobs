@@ -1,11 +1,12 @@
 #include "rss.hh"
 
+#include <array>
 #include <cstddef>
 #include <sys/types.h>
 #include <unistd.h>
 
 #ifdef __linux__
-#include <cstdio>
+#include <fstream>
 #include <string>
 #elif defined(__APPLE__)
 #include <libproc.h>
@@ -30,19 +31,13 @@ constexpr size_t MIB = 1024 * 1024;
 
 auto residentMemoryMiB(pid_t pid) -> size_t {
 #ifdef __linux__
-    const std::string path = "/proc/" + std::to_string(pid) + "/statm";
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-    FILE *file = std::fopen(path.c_str(), "re");
-    if (file == nullptr) {
+    std::ifstream statm("/proc/" + std::to_string(pid) + "/statm");
+    size_t size = 0;
+    size_t resident = 0;
+    if (!(statm >> size >> resident)) {
         return 0;
     }
-    unsigned long size = 0;
-    unsigned long resident = 0;
-    // NOLINTNEXTLINE(cert-err34-c)
-    const int n = std::fscanf(file, "%lu %lu", &size, &resident);
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-    std::fclose(file);
-    return n == 2 ? pagesToMiB(resident) : 0;
+    return pagesToMiB(resident);
 #elif defined(__APPLE__)
     struct rusage_info_v4 info = {};
     if (proc_pid_rusage(
@@ -55,8 +50,9 @@ auto residentMemoryMiB(pid_t pid) -> size_t {
 #elif defined(__FreeBSD__) || defined(__DragonFly__)
     struct kinfo_proc info = {};
     size_t len = sizeof(info);
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
-    if (sysctl(mib, 4, &info, &len, nullptr, 0) != 0 || len == 0) {
+    std::array mib{CTL_KERN, KERN_PROC, KERN_PROC_PID, static_cast<int>(pid)};
+    if (sysctl(mib.data(), mib.size(), &info, &len, nullptr, 0) != 0 ||
+        len == 0) {
         return 0;
     }
 #ifdef __DragonFly__
@@ -67,13 +63,24 @@ auto residentMemoryMiB(pid_t pid) -> size_t {
 #elif defined(__NetBSD__) || defined(__OpenBSD__)
 #ifdef __NetBSD__
     struct kinfo_proc2 info = {};
-    int mib[6] = {CTL_KERN, KERN_PROC2, KERN_PROC_PID, pid, sizeof(info), 1};
+    std::array mib{CTL_KERN,
+                   KERN_PROC2,
+                   KERN_PROC_PID,
+                   static_cast<int>(pid),
+                   static_cast<int>(sizeof(info)),
+                   1};
 #else
     struct kinfo_proc info = {};
-    int mib[6] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid, sizeof(info), 1};
+    std::array mib{CTL_KERN,
+                   KERN_PROC,
+                   KERN_PROC_PID,
+                   static_cast<int>(pid),
+                   static_cast<int>(sizeof(info)),
+                   1};
 #endif
     size_t len = sizeof(info);
-    if (sysctl(mib, 6, &info, &len, nullptr, 0) != 0 || len == 0) {
+    if (sysctl(mib.data(), mib.size(), &info, &len, nullptr, 0) != 0 ||
+        len == 0) {
         return 0;
     }
     return pagesToMiB(info.p_vm_rssize);
