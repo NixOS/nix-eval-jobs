@@ -899,3 +899,30 @@ def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
     )
     assert len(res.stdout.splitlines()) == 8
     assert "waiting for another Nix process" not in res.stderr, res.stderr
+
+
+def test_memory_budget_evicts_and_reports_fat_attr() -> None:
+    """A job that cannot fit the budget even alone becomes a per-attr
+    error instead of aborting the whole run. Siblings still succeed."""
+    with TemporaryDirectory() as tempdir:
+        res = subprocess.run(
+            [
+                str(BIN),
+                "--gc-roots-dir",
+                tempdir,
+                "--workers",
+                "2",
+                "--max-memory-size",
+                "150",
+                *COMMON_FLAGS,
+                "memory-hog.nix",
+            ],
+            cwd=TEST_ROOT.joinpath("assets"),
+            text=True,
+            capture_output=True,
+        )
+        assert res.returncode == 0, res.stderr
+        results = {r["attr"]: r for r in map(json.loads, res.stdout.splitlines()) if r}
+        assert "drvPath" in results["small"], results
+        assert "memory budget" in results["fat"].get("error", ""), results
+        assert "killing worker" in res.stderr
