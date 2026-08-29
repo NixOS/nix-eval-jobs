@@ -50,4 +50,8 @@ struct Response {
     bool operator==(const Response &) const = default;
 };
 
+/* Dot-joined attribute path as used for Response::attr. Components that
+   contain dots are quoted. */
+auto joinAttrPath(const nlohmann::json &attrPath) -> std::string;
+
 JSON_IMPL(Response)

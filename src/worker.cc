@@ -1,5 +1,4 @@
 // doesn't exist on macOS
-// IWYU pragma: no_include <bits/types/struct_rusage.h>
 
 #include <nix/expr/eval-error.hh>
 #include <nix/util/pos-idx.hh>
@@ -9,7 +8,7 @@
 #include <nix/store/globals.hh>
 #include <nix/cmd/installable-flake.hh>
 #include <nix/expr/value-to-json.hh>
-#include <sys/resource.h>
+#include <unistd.h>
 #include <nlohmann/json.hpp>
 #include <cstdio>
 #include <iostream>
@@ -37,7 +36,6 @@
 #include <nix/expr/value.hh>
 #include <nix/expr/value/context.hh>
 #include <nlohmann/json_fwd.hpp>
-#include <numeric>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -52,6 +50,7 @@
 #include "buffered-io.hh"
 #include "eval-args.hh"
 #include "store.hh"
+#include "rss.hh"
 
 namespace nix {
 struct Expr;
@@ -120,92 +119,67 @@ auto evaluateFlake(const nix::ref<nix::EvalState> &state, const MyArgs &args)
     return flake.toValue(*state).first;
 }
 
-auto attrPathJoin(nlohmann::json input) -> std::string {
-    return std::accumulate(
-        input.begin(), input.end(), std::string(),
-        [](const std::string &acc, std::string str) -> std::basic_string<char> {
-            // Escape token if containing dots
-            if (str.find('.') != std::string::npos) {
-                str = "\"" + str + "\"";
-            }
-            return acc.empty() ? str : acc + "." + str;
-        });
+auto forceBoolAttr(nix::EvalState &state, nix::Value *value,
+                   std::string_view name) -> bool {
+    const auto *attr = value->attrs()->get(state.symbols.create(name));
+    return attr != nullptr &&
+           state.forceBool(
+               *attr->value, attr->pos,
+               nix::fmt("while evaluating the `%s` attribute", name));
+}
+
+/* Derivation constituents: store paths from the string context of
+   `constituents`. */
+auto drvConstituents(nix::EvalState &state, const nix::Attr &attr)
+    -> std::vector<std::string> {
+    nix::NixStringContext context;
+    state.coerceToString(attr.pos, *attr.value, context,
+                         "while evaluating the `constituents` attribute", true,
+                         false);
+    std::vector<std::string> drvs;
+    for (const auto &ctx : context) {
+        if (const auto *built =
+                std::get_if<nix::NixStringContextElem::Built>(&ctx.raw)) {
+            drvs.push_back(built->drvPath->to_string(*state.store));
+        }
+    }
+    return drvs;
+}
+
+/* Named constituents: plain strings in the `constituents` list, resolved
+   to jobs by the collector. */
+auto namedConstituents(nix::EvalState &state, const nix::Attr &attr)
+    -> std::vector<std::string> {
+    state.forceList(*attr.value, attr.pos,
+                    "while evaluating the `constituents` attribute");
+    std::vector<std::string> names;
+    for (const auto &val : attr.value->listView()) {
+        state.forceValue(*val, nix::noPos);
+        if (val->type() == nix::nString) {
+            names.emplace_back(val->c_str());
+        }
+    }
+    return names;
 }
 
 auto extractConstituents(nix::EvalState &state, nix::Value *value,
                          const MyArgs &args) -> Constituents {
-    if (!args.constituents) {
+    if (!args.constituents || !forceBoolAttr(state, value, "_hydraAggregate")) {
         return {};
     }
-
-    std::vector<std::string> constituents;
-    std::vector<std::string> namedConstituents;
-    bool globConstituents = false;
-
-    const auto *aggregateAttr =
-        value->attrs()->get(state.symbols.create("_hydraAggregate"));
-
-    if (aggregateAttr != nullptr &&
-        state.forceBool(*aggregateAttr->value, aggregateAttr->pos,
-                        "while evaluating the `_hydraAggregate` attribute")) {
-
-        const auto *constituentsAttr =
-            value->attrs()->get(state.symbols.create("constituents"));
-
-        if (constituentsAttr == nullptr) {
-            state
-                .error<nix::EvalError>(
-                    "derivation must have a 'constituents' attribute")
-                .debugThrow();
-        }
-
-        // Extract constituent paths from context
-        nix::NixStringContext context;
-        state.coerceToString(
-            constituentsAttr->pos, *constituentsAttr->value, context,
-            "while evaluating the `constituents` attribute", true, false);
-
-        for (const auto &ctx : context) {
-            std::visit(
-                nix::overloaded{
-                    [&](const nix::NixStringContextElem::Built &built) -> void {
-                        constituents.push_back(
-                            built.drvPath->to_string(*state.store));
-                    },
-                    [&](const nix::NixStringContextElem::Opaque &opaque
-                        [[maybe_unused]]) -> void {},
-                    [&](const nix::NixStringContextElem::DrvDeep &drvDeep
-                        [[maybe_unused]]) -> void {},
-                },
-                ctx.raw);
-        }
-
-        // Extract named constituents
-        state.forceList(*constituentsAttr->value, constituentsAttr->pos,
-                        "while evaluating the `constituents` attribute");
-        auto constituentsList = constituentsAttr->value->listView();
-
-        for (const auto &val : constituentsList) {
-            state.forceValue(*val, nix::noPos);
-            if (val->type() == nix::nString) {
-                namedConstituents.emplace_back(val->c_str());
-            }
-        }
-
-        // Check for glob constituents
-        const auto *glob =
-            value->attrs()->get(state.symbols.create("_hydraGlobConstituents"));
-        globConstituents =
-            glob != nullptr &&
-            state.forceBool(
-                *glob->value, glob->pos,
-                "while evaluating the `_hydraGlobConstituents` attribute");
+    const auto *attr =
+        value->attrs()->get(state.symbols.create("constituents"));
+    if (attr == nullptr) {
+        state
+            .error<nix::EvalError>(
+                "derivation must have a 'constituents' attribute")
+            .debugThrow();
     }
-
     return Constituents{
-        .constituents = std::move(constituents),
-        .namedConstituents = std::move(namedConstituents),
-        .globConstituents = globConstituents,
+        .constituents = drvConstituents(state, *attr),
+        .namedConstituents = namedConstituents(state, *attr),
+        .globConstituents =
+            forceBoolAttr(state, value, "_hydraGlobConstituents"),
     };
 }
 
@@ -245,7 +219,6 @@ auto registerGCRoot(nix::EvalState &state, const Drv &drv, const MyArgs &args)
         if (localStore) {
             localStore->addPermRoot(drv.drvPath, root);
         }
-        // If not a local store, we can't create GC roots
     }
 }
 
@@ -281,20 +254,15 @@ auto processDerivation(nix::EvalState &state, nix::Value *value,
         return Response::Attrs{std::move(attrs)};
     }
 
-    // Extract constituents if enabled
     auto constituents = extractConstituents(state, value, args);
 
-    // Apply expression if provided
     std::optional<nlohmann::json> extraValue;
     if (!args.applyExpr.empty()) {
         extraValue = applyExprToValue(state, value, args.applyExpr);
     }
 
-    // Create derivation info
     auto drv = Drv::fromPackageInfo(attrPathS, state, *packageInfo, args,
                                     std::move(constituents));
-
-    // Register GC root
     registerGCRoot(state, drv, args);
 
     return Response::Job{std::move(drv), std::move(extraValue)};
@@ -311,7 +279,6 @@ auto initializeRootValue(const nix::ref<nix::EvalState> &state,
         return vEvaluated;
     }
 
-    // Apply the provided select function
     auto *selectExpr =
         state->parseExprFromString(args.selectExpr, state->rootPath("."));
 
@@ -328,84 +295,71 @@ auto initializeRootValue(const nix::ref<nix::EvalState> &state,
 }
 
 auto shouldRestart(const MyArgs &args) -> bool {
-    struct rusage resourceUsage = {}; // NOLINT(misc-include-cleaner)
-    getrusage(RUSAGE_SELF, &resourceUsage);
-    size_t maxrss =
-        resourceUsage
-            .ru_maxrss; // NOLINT(cppcoreguidelines-pro-type-union-access)
-    static constexpr size_t KB_TO_BYTES = 1024;
-#ifdef __APPLE__
-    maxrss /= KB_TO_BYTES; // ru_maxrss is bytes on macOS instead of KiB
-#endif
-    return maxrss > args.maxMemorySize * KB_TO_BYTES;
+    return residentMemoryMiB(getpid()) > args.maxMemorySize;
 }
 
-auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
-                       nix::AutoCloseFD &toParent, nix::Bindings &autoArgs,
-                       nix::Value *vRoot, MyArgs &args) -> bool {
-    /* Wait for the collector to send us a job name. */
+struct Evaluator {
+    nix::EvalState &state;
+    nix::Bindings &autoArgs;
+    nix::Value *vRoot;
+    MyArgs &args;
+
+    auto evaluate(const nlohmann::json &path) -> Response::Payload {
+        auto attrPathS = joinAttrPath(path);
+        try {
+            auto *vTmp =
+                nix::findAlongAttrPath(state, attrPathS, autoArgs, *vRoot)
+                    .first;
+            auto *value = state.allocValue();
+            state.autoCallFunction(autoArgs, *vTmp, *value);
+            if (value->type() != nix::nAttrs) {
+                return Response::Attrs{{}}; // not buildable, ignore
+            }
+            return processDerivation(state, value, attrPathS, path, args);
+        } catch (nix::StackOverflowError &e) {
+            /* Not an EvalError. Fatal aborts the whole evaluation. */
+            return Response::Error{
+                .error = nix::filterANSIEscapes(showError(e.info()), true),
+                .fatal = true,
+            };
+        } catch (nix::EvalError &e) {
+            return Response::Error{
+                nix::filterANSIEscapes(showError(e.info()), true)};
+        } catch (const std::exception &e) {
+            std::cerr << e.what() << '\n';
+            return Response::Error{nix::filterANSIEscapes(e.what(), true)};
+        }
+    }
+};
+
+/* One request/response round with the collector. False once the worker
+   should exit (collector gone, told to exit, or memory share used up). */
+auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
+                       nix::AutoCloseFD &toParent) -> bool {
     if (tryWriteLine(toParent.get(), std::string(MSG_NEXT)) < 0) {
-        return false; // main process died
+        return false;
     }
 
     auto line = fromReader.readLine();
     if (line == MSG_EXIT) {
         return false;
     }
-
     if (!nix::hasPrefix(line, MSG_DO)) {
         std::cerr << "worker error: received invalid command '" << line
                   << "'\n";
         abort();
     }
-
     auto path = nlohmann::json::parse(line.substr(MSG_DO.size()));
-    auto attrPathS = attrPathJoin(path);
 
-    /* Evaluate it and send info back to the collector. */
-    Response::Payload payload = [&]() -> Response::Payload {
-        try {
-            auto *vTmp =
-                nix::findAlongAttrPath(state, attrPathS, autoArgs, *vRoot)
-                    .first;
-
-            auto *value = state.allocValue();
-            state.autoCallFunction(autoArgs, *vTmp, *value);
-
-            if (value->type() == nix::nAttrs) {
-                return processDerivation(state, value, attrPathS, path, args);
-            }
-            // We ignore everything that cannot be built
-            return Response::Attrs{{}};
-        } catch (nix::StackOverflowError &e) {
-            /* Not an EvalError. Fatal aborts the whole evaluation. */
-            auto msg = showError(e.info());
-            return Response::Error{
-                .error = nix::filterANSIEscapes(msg, true),
-                .fatal = true,
-            };
-        } catch (nix::EvalError &e) {
-            auto msg = showError(e.info());
-            return Response::Error{nix::filterANSIEscapes(msg, true)};
-        } catch (const std::exception &e) {
-            const auto *msg = e.what();
-            std::cerr << msg << '\n';
-            return Response::Error{nix::filterANSIEscapes(msg, true)};
-        }
-    }();
-
-    Response const response{
-        .attr = attrPathS,
+    const Response response{
+        .attr = joinAttrPath(path),
         .attrPath = path.get<std::vector<std::string>>(),
-        .payload = std::move(payload),
+        .payload = evaluator.evaluate(path),
     };
-    nlohmann::json const reply = response;
-    if (tryWriteLine(toParent.get(), reply.dump()) < 0) {
-        return false; // main process died
+    if (tryWriteLine(toParent.get(), nlohmann::json(response).dump()) < 0) {
+        return false;
     }
-
-    /* Check if we should restart due to memory usage */
-    return !shouldRestart(args);
+    return !shouldRestart(evaluator.args);
 }
 
 } // namespace
@@ -445,14 +399,15 @@ void worker(
         args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings);
     nix::Bindings &autoArgs = *args.getAutoArgs(*state);
 
-    nix::Value *vRoot = initializeRootValue(state, autoArgs, args);
+    Evaluator evaluator{
+        .state = *state,
+        .autoArgs = autoArgs,
+        .vRoot = initializeRootValue(state, autoArgs, args),
+        .args = args,
+    };
 
-    while (processJobRequest(*state, fromReader, toParent, autoArgs, vRoot,
-                             args)) {
-        // Continue processing jobs until we need to exit
+    while (processJobRequest(evaluator, fromReader, toParent)) {
     }
 
-    if (tryWriteLine(toParent.get(), std::string(MSG_RESTART)) < 0) {
-        return; // main process died
-    };
+    (void)tryWriteLine(toParent.get(), std::string(MSG_RESTART));
 }

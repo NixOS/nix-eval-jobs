@@ -12,6 +12,18 @@
 #include "response.hh"
 #include "drv.hh"
 
+auto joinAttrPath(const nlohmann::json &attrPath) -> std::string {
+    std::string joined;
+    for (const auto &element : attrPath) {
+        auto part = element.get<std::string>();
+        if (part.find('.') != std::string::npos) {
+            part = "\"" + part + "\"";
+        }
+        joined += joined.empty() ? part : "." + part;
+    }
+    return joined;
+}
+
 namespace nlohmann {
 
 using nix::get;

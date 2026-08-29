@@ -337,17 +337,6 @@ void handleBrokenWorkerPipe(Proc &proc, std::string_view msg) {
     }
 }
 
-auto joinAttrPath(const nlohmann::json &attrPath) -> std::string {
-    std::string joined;
-    for (const auto &element : attrPath) {
-        if (!joined.empty()) {
-            joined += '.';
-        }
-        joined += element.get<std::string>();
-    }
-    return joined;
-}
-
 namespace {
 auto checkWorkerStatus(LineReader *fromReader, Proc *proc) -> std::string_view {
     auto line = fromReader->readLine();
