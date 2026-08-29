@@ -111,6 +111,42 @@ def test_input_drvs() -> None:
         assert "inputDrvs" in result
 
 
+def run_plain(expr: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(BIN), "--workers", "1", *extra, str(TEST_ROOT / "assets" / expr)],
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_odd_attribute_names_and_cycles() -> None:
+    res = run_plain("odd-names.nix")
+    assert res.returncode == 0, res.stderr
+    results = {r["attr"]: r for r in map(json.loads, res.stdout.splitlines())}
+    assert results[r'"quo\"te"']["name"] == "quote"
+    assert results['""']["name"] == "empty"
+    assert results['"1"']["name"] == "numeric"
+    assert results["cycle.ok"]["name"] == "in-cycle"
+    assert "cycle" in results["cycle.again"]["error"]
+    assert "cycle.again.ok" not in results
+
+
+def test_closed_stdout_aborts() -> None:
+    proc = subprocess.Popen(
+        [str(BIN), "--workers", "1", str(TEST_ROOT / "assets" / "odd-names.nix")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    proc.stdout.close()
+    _, stderr = proc.communicate(timeout=60)
+    assert proc.returncode != 0
+    assert "stdout" in stderr
+
+
 def test_eval_error() -> None:
     with TemporaryDirectory() as tempdir:
         cmd = [

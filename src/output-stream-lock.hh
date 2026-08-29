@@ -3,7 +3,9 @@
 
 #include <iostream>
 #include <mutex>
+#include <nix/util/error.hh>
 #include <utility>
+
 struct OutputStreamLock {
   private:
     std::mutex mutex;
@@ -29,9 +31,12 @@ struct OutputStreamLock {
             return std::move(*this);
         }
 
-        ~LockedOutputStream() {
+        ~LockedOutputStream() noexcept(false) {
             if (lock) {
                 *stream << std::flush;
+                if (!*stream) {
+                    throw nix::Error("stdout was closed, aborting");
+                }
             }
         }
     };
