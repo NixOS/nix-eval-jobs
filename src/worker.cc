@@ -357,24 +357,26 @@ struct Evaluator {
     }
 };
 
-/* One request/response round with the collector. False once the worker
-   should exit (collector gone, told to exit, or memory share used up). */
+enum class Next { Job, Exit, Restart };
+
+/* One request/response round with the collector. */
 auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
-                       nix::AutoCloseFD &toParent) -> bool {
+                       nix::AutoCloseFD &toParent) -> Next {
     if (tryWriteLine(toParent.get(), std::string(MSG_NEXT)) < 0) {
-        return false;
+        return Next::Exit;
     }
 
     auto line = fromReader.readLine();
-    if (line == MSG_EXIT) {
-        return false;
+    if (!line || *line == MSG_EXIT) {
+        return Next::Exit;
     }
-    if (!nix::hasPrefix(line, MSG_DO)) {
-        std::cerr << "worker error: received invalid command '" << line
-                  << "'\n";
-        abort();
+    if (!line->starts_with(MSG_DO)) {
+        throw nix::Error("worker received invalid command '%s'", *line);
     }
-    auto path = nlohmann::json::parse(line.substr(MSG_DO.size()));
+    auto path = nlohmann::json::parse(line->substr(MSG_DO.size()));
+    if (!path.is_array()) {
+        throw nix::Error("worker received invalid attribute path '%s'", *line);
+    }
 
     evaluator.logCapture.take(); // drop noise from between jobs
     auto payload = evaluator.evaluate(path);
@@ -387,9 +389,9 @@ auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
         .traces = std::move(logs.traces),
     };
     if (tryWriteLine(toParent.get(), nlohmann::json(response).dump()) < 0) {
-        return false;
+        return Next::Exit;
     }
-    return !shouldRestart(evaluator.args);
+    return shouldRestart(evaluator.args) ? Next::Restart : Next::Job;
 }
 
 } // namespace
@@ -421,7 +423,11 @@ void worker(
 
     LineReader fromReader(fromParent.release());
 
-    auto config = nlohmann::json::parse(fromReader.readLine());
+    auto configLine = fromReader.readLine();
+    if (!configLine) {
+        return;
+    }
+    auto config = nlohmann::json::parse(*configLine);
     args.lockedFlakeAttrs = config.value("lockedFlake", "");
 
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
@@ -437,8 +443,11 @@ void worker(
         .logCapture = EvalLogCapture::install(),
     };
 
-    while (processJobRequest(evaluator, fromReader, toParent)) {
+    auto next = Next::Job;
+    while (next == Next::Job) {
+        next = processJobRequest(evaluator, fromReader, toParent);
     }
-
-    (void)tryWriteLine(toParent.get(), std::string(MSG_RESTART));
+    if (next == Next::Restart) {
+        (void)tryWriteLine(toParent.get(), std::string(MSG_RESTART));
+    }
 }

@@ -1,6 +1,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <cerrno>
+#include <optional>
 #include <cstdlib>
 // NOLINTBEGIN(modernize-deprecated-headers)
 // misc-include-cleaner wants these headers rather than the C++ version
@@ -50,18 +51,20 @@ LineReader::LineReader(LineReader &&other) noexcept
     other.len = 0;
 }
 
-[[nodiscard]] auto LineReader::readLine() -> std::string_view {
+[[nodiscard]] auto LineReader::readLine() -> std::optional<std::string_view> {
     char *buf = buffer.release();
     const ssize_t read = getline(&buf, &len, stream.get());
     buffer.reset(buf);
 
-    if (read == -1) {
-        return {}; // Return an empty string_view in case of error
+    if (read <= 0) {
+        return std::nullopt;
     }
 
     nix::checkInterrupt();
 
-    // Remove trailing newline
-    char const *line = buffer.get();
-    return {line, static_cast<size_t>(read) - 1};
+    std::string_view line{buffer.get(), static_cast<size_t>(read)};
+    if (line.ends_with('\n')) {
+        line.remove_suffix(1);
+    }
+    return line;
 }
