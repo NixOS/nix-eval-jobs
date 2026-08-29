@@ -1,5 +1,8 @@
 
 #include <cstdlib>
+#include <charconv>
+#include <string_view>
+#include <system_error>
 #include <nix/util/args.hh>
 #include <nix/util/error.hh>
 #include <nix/util/file-system.hh>
@@ -27,6 +30,20 @@
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Wmissing-designated-field-initializers"
 #endif
+
+namespace {
+template <typename T>
+auto parsePositive(std::string_view flag, const std::string &str) -> T {
+    T value{};
+    auto [end, ec] =
+        std::from_chars(str.data(), str.data() + str.size(), value);
+    if (ec != std::errc{} || end != str.data() + str.size() || value < 1) {
+        throw nix::UsageError("--%s expects a positive integer, got '%s'", flag,
+                              str);
+    }
+    return value;
+}
+} // namespace
 
 MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
     addFlag({
@@ -72,7 +89,7 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
         .description = "number of evaluate workers",
         .labels = {"workers"},
         .handler = {[this](const std::string &str) -> void {
-            nrWorkers = std::stoi(str);
+            nrWorkers = parsePositive<size_t>("workers", str);
         }},
     });
 
@@ -87,7 +104,7 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
             "and its job retried alone.",
         .labels = {"size"},
         .handler = {[this](const std::string &str) -> void {
-            maxMemorySize = std::stoi(str);
+            maxMemorySize = parsePositive<size_t>("max-memory-size", str);
         }},
     });
 
