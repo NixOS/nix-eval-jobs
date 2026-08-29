@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <memory>
+#include <optional>
 #include <cstdlib>
 
 [[nodiscard]] auto tryWriteLine(int file_descriptor, std::string str) -> int;
@@ -34,7 +35,8 @@ class LineReader {
     ~LineReader() = default;
 
     LineReader(LineReader &&other) noexcept;
-    [[nodiscard]] auto readLine() -> std::string_view;
+    /* nullopt on EOF or error. */
+    [[nodiscard]] auto readLine() -> std::optional<std::string_view>;
 
   private:
     std::unique_ptr<FILE, FileDeleter> stream = nullptr;

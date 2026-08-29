@@ -157,6 +157,27 @@ def test_rejects_bad_numeric_flags(flag: list[str]) -> None:
     assert flag[0] in res.stderr
 
 
+def test_worker_exits_cleanly_when_collector_disappears() -> None:
+    with TemporaryDirectory() as tempdir:
+        cfg = Path(tempdir) / "cfg"
+        cfg.write_text("{}\n")
+        out = Path(tempdir) / "out"
+        with cfg.open() as cfg_fd, out.open("w") as out_fd:
+            res = subprocess.run(
+                [str(BIN), "--worker", str(TEST_ROOT / "assets" / "ci.nix")],
+                stdin=subprocess.DEVNULL,
+                capture_output=False,
+                stderr=subprocess.PIPE,
+                text=True,
+                pass_fds=(3, 4),
+                preexec_fn=lambda: (os.dup2(out_fd.fileno(), 3), os.dup2(cfg_fd.fileno(), 4)),
+                timeout=60,
+                check=False,
+            )
+        assert res.returncode == 0, res.stderr
+        assert out.read_text() == "next\n"
+
+
 def test_eval_error() -> None:
     with TemporaryDirectory() as tempdir:
         cmd = [
