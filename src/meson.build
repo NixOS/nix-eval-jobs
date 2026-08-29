@@ -10,6 +10,7 @@ common_src = [
   'cache-status-resolver.cc',
   'daemon-settings.cc',
   'rss.cc',
+  'proc.cc',
 ]
 
 common_deps = [
