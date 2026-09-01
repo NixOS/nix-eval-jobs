@@ -5,6 +5,7 @@
 #include <nlohmann/json_fwd.hpp>
 // Required for std::optional<nlohmann::json>
 #include <nlohmann/json.hpp> //NOLINT(misc-include-cleaner)
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <variant>
@@ -52,6 +53,15 @@ struct Response {
        so a message shows up on whichever attribute got there first. */
     std::vector<std::string> warnings = {};
     std::vector<std::string> traces = {};
+
+    /* Cost of evaluating this attribute in the worker. Like warnings,
+       shared thunks are billed to whichever attribute forced them first. */
+    struct Stats {
+        uint64_t wallMs = 0;
+        uint64_t allocBytes = 0; // GC allocations, 0 without Boehm
+        bool operator==(const Stats &) const = default;
+    };
+    std::optional<Stats> stats = {};
 
     bool operator==(const Response &) const = default;
 };

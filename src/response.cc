@@ -62,6 +62,7 @@ using nix::get;
 using nix::getBoolean;
 using nix::getObject;
 using nix::getString;
+using nix::getUnsigned;
 using nix::overloaded;
 using nix::valueAt;
 
@@ -75,6 +76,12 @@ void adl_serializer<Response>::to_json(json &res, const Response &response) {
     }
     if (!response.traces.empty()) {
         res["traces"] = response.traces;
+    }
+    if (response.stats) {
+        res["stats"] = json{
+            {"wallMs", response.stats->wallMs},
+            {"allocBytes", response.stats->allocBytes},
+        };
     }
 
     std::visit(overloaded{
@@ -107,6 +114,13 @@ auto adl_serializer<Response>::from_json(const json &_json) -> Response {
         return v ? v->get<std::vector<std::string>>()
                  : std::vector<std::string>{};
     };
+    std::optional<Response::Stats> stats;
+    if (const auto *s = get(json, "stats")) {
+        stats = Response::Stats{
+            .wallMs = getUnsigned(valueAt(getObject(*s), "wallMs")),
+            .allocBytes = getUnsigned(valueAt(getObject(*s), "allocBytes")),
+        };
+    }
     auto makeResponse = [&](Response::Payload payload) -> Response {
         return Response{
             .attr = std::move(attr),
@@ -114,6 +128,7 @@ auto adl_serializer<Response>::from_json(const json &_json) -> Response {
             .payload = std::move(payload),
             .warnings = stringList("warnings"),
             .traces = stringList("traces"),
+            .stats = stats,
         };
     };
 

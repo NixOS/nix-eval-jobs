@@ -300,6 +300,15 @@ INSTANTIATE_TEST_SUITE_P(
                 .warnings = {"deprecated", "also deprecated"},
                 .traces = {"got here"},
             },
+        },
+        std::pair{
+            "attrs-with-stats",
+            Response{
+                .attr = "pkgs",
+                .attrPath = {"pkgs"},
+                .payload = Response::Attrs{.attrs = {"foo"}},
+                .stats = Response::Stats{.wallMs = 12, .allocBytes = 4096},
+            },
         }));
 
 // NOLINTEND(google-readability-avoid-underscore-in-googletest-name)

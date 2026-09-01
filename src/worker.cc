@@ -16,12 +16,15 @@
 #include <stdlib.h>
 // NOLINTEND(modernize-deprecated-headers)
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <nix/expr/attr-set.hh>
 #include <nix/cmd/common-eval-args.hh>
 #include <nix/util/error.hh>
 #include <nix/expr/eval.hh>
+#include <nix/expr/eval-gc.hh>
 #include <nix/util/file-system.hh>
 #include <nix/fetchers/attrs.hh>
 #include <nix/flake/flakeref.hh>
@@ -359,6 +362,17 @@ struct Evaluator {
 
 enum class Next { Job, Exit, Restart };
 
+auto gcAllocatedBytes() -> uint64_t {
+#if NIX_USE_BOEHMGC
+    GC_word heapSize = 0;
+    GC_word totalBytes = 0;
+    GC_get_heap_usage_safe(&heapSize, nullptr, nullptr, nullptr, &totalBytes);
+    return totalBytes;
+#else
+    return 0;
+#endif
+}
+
 /* One request/response round with the collector. */
 auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
                        nix::AutoCloseFD &toParent) -> Next {
@@ -379,7 +393,16 @@ auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
     }
 
     evaluator.logCapture.take(); // drop noise from between jobs
+    const auto startTime = std::chrono::steady_clock::now();
+    const auto startAlloc = gcAllocatedBytes();
     auto payload = evaluator.evaluate(path);
+    const Response::Stats stats{
+        .wallMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startTime)
+                .count()),
+        .allocBytes = gcAllocatedBytes() - startAlloc,
+    };
     auto logs = evaluator.logCapture.take();
     const Response response{
         .attr = joinAttrPath(path),
@@ -387,6 +410,7 @@ auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
         .payload = std::move(payload),
         .warnings = std::move(logs.warnings),
         .traces = std::move(logs.traces),
+        .stats = stats,
     };
     if (tryWriteLine(toParent.get(), nlohmann::json(response).dump()) < 0) {
         return Next::Exit;
