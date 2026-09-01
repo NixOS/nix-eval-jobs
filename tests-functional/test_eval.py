@@ -66,6 +66,11 @@ def common_test(extra_args: list[str]) -> list[dict[str, Any]]:
         recurse_drv = by_attr["recurse.drvB"]
         assert recurse_drv["name"] == "drvB"
 
+        for r in results:
+            stats = r["stats"]
+            assert stats["wallMs"] >= 0
+            assert stats["allocBytes"] > 0
+
         assert len(list(Path(tempdir).iterdir())) == 4
         return results
 

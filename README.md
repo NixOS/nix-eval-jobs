@@ -136,6 +136,15 @@ evaluated, as `"warnings": [...]` and `"traces": [...]` (omitted when empty).
 Because Nix evaluates shared values only once, a message from code shared
 between attributes is reported on whichever attribute forced it first.
 
+### How expensive was an attribute to evaluate?
+
+Every JSON line carries `"stats": {"wallMs": ..., "allocBytes": ...}` with the
+wall-clock time and the number of bytes allocated on the GC heap while the
+worker evaluated that attribute. As with warnings, values shared between
+attributes are only evaluated once and are billed to whichever attribute forced
+them first, so the numbers depend on scheduling order and are best used to spot
+outliers rather than for exact accounting.
+
 ### How can I evaluate nixpkgs?
 
 If you want to evaluate nixpkgs in the same way

@@ -1,0 +1,13 @@
+{
+  "attr": "pkgs",
+  "attrPath": [
+    "pkgs"
+  ],
+  "attrs": [
+    "foo"
+  ],
+  "stats": {
+    "allocBytes": 4096,
+    "wallMs": 12
+  }
+}
