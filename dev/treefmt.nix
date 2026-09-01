@@ -5,7 +5,6 @@ let
     && (builtins.tryEval pkgs.deno.outPath).success;
 in
 {
-  flakeCheck = pkgs.stdenv.hostPlatform.system != "riscv64-linux";
   # Used to find the project root
   projectRootFile = "flake.lock";
 

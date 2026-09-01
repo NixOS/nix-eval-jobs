@@ -7,17 +7,18 @@
     # We want to control the deps precisely
     flake = false;
   };
-  inputs.flake-parts.url = "github:hercules-ci/flake-parts";
-  inputs.flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
   inputs.treefmt-nix.url = "github:numtide/treefmt-nix";
   inputs.treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
 
   outputs =
-    inputs@{ flake-parts, ... }:
+    {
+      self,
+      nixpkgs,
+      nix,
+      treefmt-nix,
+    }:
     let
-      inherit (inputs.nixpkgs) lib;
-    in
-    flake-parts.lib.mkFlake { inherit inputs; } {
+      inherit (nixpkgs) lib;
       systems = [
         "aarch64-linux"
         "riscv64-linux"
@@ -25,141 +26,49 @@
 
         "aarch64-darwin"
       ];
-      imports = [ inputs.treefmt-nix.flakeModule ];
+      eachSystem =
+        f:
+        lib.genAttrs systems (
+          system:
+          f system (
+            nixpkgs.legacyPackages.${system}.callPackage ./dev/nix-scope.nix {
+              inherit nix treefmt-nix self;
+            }
+          )
+        );
+    in
+    {
+      packages = eachSystem (
+        _system: scope: {
+          inherit (scope) nix-eval-jobs clangStdenv-nix-eval-jobs;
+          default = scope.nix-eval-jobs;
+        }
+      );
 
-      perSystem =
-        { pkgs, self', ... }:
-        let
-          nixDependencies = lib.makeScope pkgs.newScope (
-            scope:
-            let
-              super = import (inputs.nix + "/packaging/dependencies.nix") {
-                inherit pkgs;
-                inherit (pkgs) stdenv;
-                inputs = { };
-              } scope;
-            in
-            super
-            // {
-              # `dependencies.nix` patches boost for
-              # https://github.com/NixOS/nix/issues/16174, but the nixpkgs we
-              # track already backports that commit (boostorg/context@5883212),
-              # so cut the extra patches.
-              #
-              # FIXME avoid messing up in Nix itself instead.
-              boost = super.boost.overrideAttrs (_: {
-                patches = pkgs.boost.patches;
-              });
-            }
-          );
-          nixComponents = lib.makeScope nixDependencies.newScope (
-            import (inputs.nix + "/packaging/components.nix") {
-              officialRelease = true;
-              inherit lib pkgs;
-              src = inputs.nix;
-              maintainers = [ ];
-            }
-          );
-          drvArgs = {
-            inherit nixComponents;
-          };
-        in
+      devShells = eachSystem (
+        _system: scope: {
+          default = scope.shell;
+          clang = scope.clangShell;
+        }
+      );
+
+      formatter = eachSystem (_system: scope: scope.treefmt.config.build.wrapper);
+
+      checks = eachSystem (
+        system: scope:
         {
-          treefmt.imports = [ ./dev/treefmt.nix ];
-          packages.nix-eval-jobs = nixDependencies.callPackage ./default.nix drvArgs;
-          packages.clangStdenv-nix-eval-jobs = nixDependencies.callPackage ./default.nix (
-            drvArgs // { stdenv = pkgs.clangStdenv; }
-          );
-          packages.default = self'.packages.nix-eval-jobs;
-          devShells.default = nixDependencies.callPackage ./shell.nix drvArgs;
-          devShells.clang = nixDependencies.callPackage ./shell.nix (
-            drvArgs // { stdenv = pkgs.clangStdenv; }
-          );
-
-          checks = builtins.removeAttrs self'.packages [ "default" ] // {
-            shell = self'.devShells.default;
-            scheduler-spec =
-              pkgs.runCommand "nix-eval-jobs-scheduler-spec" { nativeBuildInputs = [ pkgs.quint ]; }
-                ''
-                    export HOME=$TMPDIR
-                    cd ${./spec}
-                    quint run scheduler.qnt --main main --invariant inv --max-steps 150 --max-samples 2000
-                    quint test scheduler.qnt --main noOomKiller --max-samples 200
-                  quint test scheduler.qnt --main main --match terminates --max-samples 200
-                    touch $out
-                '';
-            functional-tests =
-              pkgs.runCommand "nix-eval-jobs-functional-tests"
-                {
-                  src = lib.fileset.toSource {
-                    fileset = lib.fileset.unions [
-                      ./tests-functional
-                    ];
-                    root = ./.;
-                  };
-
-                  nativeBuildInputs = [
-                    self'.packages.nix-eval-jobs
-                    pkgs.python3.pkgs.pytest
-                    pkgs.nix
-                    pkgs.gitMinimal
-                  ];
-                }
-                ''
-                  # Copy test files
-                  cp -r $src/tests-functional .
-
-                  # Set up test environment
-                  export HOME=$TMPDIR
-                  export NIX_STATE_DIR=$TMPDIR/nix-state
-                  export NIX_STORE_DIR=$TMPDIR/nix-store
-                  export NIX_DATA_DIR=$TMPDIR/nix-data
-                  export NIX_LOG_DIR=$TMPDIR/nix-log
-                  export NIX_CONF_DIR=$TMPDIR/nix-conf
-
-                  # Use the pre-built nix-eval-jobs binary
-                  export NIX_EVAL_JOBS_BIN=${self'.packages.nix-eval-jobs}/bin/nix-eval-jobs
-
-                  # Run the tests
-                  pytest tests-functional/ -v
-
-                  # Create output marker
-                  touch $out
-                '';
-            clang-tidy-fix = self'.packages.nix-eval-jobs.overrideAttrs (old: {
-              pname = "nix-eval-jobs-clang-tidy";
-              nativeBuildInputs = old.nativeBuildInputs ++ [
-                pkgs.git
-                (lib.hiPrio pkgs.llvmPackages.clang-tools)
-              ];
-              buildPhase = ''
-                export HOME=$TMPDIR
-                cat > $HOME/.gitconfig <<EOF
-                [user]
-                  name = Nix
-                  email = nix@localhost
-                [init]
-                  defaultBranch = main
-                EOF
-                pushd ..
-                git init
-                git add .
-                git commit -m init --quiet
-                popd
-                echo "Verifying clang-tidy configuration..."
-                clang-tidy --verify-config
-                ninja clang-tidy-fix
-                git status
-                if ! git --no-pager diff --exit-code; then
-                  echo "clang-tidy-fix failed, please run `ninja clang-tidy-fix` and commit the changes"
-                  exit 1
-                fi
-              '';
-              installPhase = ''
-                touch $out
-              '';
-            });
-          };
-        };
+          inherit (scope)
+            nix-eval-jobs
+            clangStdenv-nix-eval-jobs
+            shell
+            scheduler-spec
+            functional-tests
+            clang-tidy-fix
+            ;
+        }
+        // lib.optionalAttrs (system != "riscv64-linux") {
+          treefmt = scope.treefmtCheck;
+        }
+      );
     };
 }
