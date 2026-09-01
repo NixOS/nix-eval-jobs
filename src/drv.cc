@@ -127,13 +127,14 @@ auto Drv::fromPackageInfo(std::string &attrPath, nix::EvalState &state,
         .constituents = std::move(constituents),
     };
 
-    /* Reading the derivation is cheap except through a daemon
-       connection, so RemoteStore keeps the fallback. A store that
+    /* Skip stores that would read the .drv over the wire. The daemon
+       (UDSRemoteStore) is a LocalFSStore and reads locally. A store that
        fails to read is remembered. */
     static std::atomic<bool> storeReadsDrvs = true;
+    const bool overTheWire = store.dynamic_pointer_cast<nix::RemoteStore>() &&
+                             !store.dynamic_pointer_cast<nix::LocalFSStore>();
     const bool tryReadDerivation =
-        !nix::settings.readOnlyMode && storeReadsDrvs &&
-        !store.dynamic_pointer_cast<nix::RemoteStore>();
+        !nix::settings.readOnlyMode && storeReadsDrvs && !overTheWire;
 
     bool precise = false;
     if (tryReadDerivation) {
