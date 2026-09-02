@@ -841,6 +841,57 @@ def test_fod_with_uncached_input_issue413(tmp_path: Path, scheme: str) -> None:
     assert fod["cacheStatus"] == "cached", fod
 
 
+def test_ifd_with_separate_eval_store(tmp_path: Path) -> None:
+    """IFD must build in --store, not in a (possibly unbuildable) --eval-store."""
+    env = _hermetic_nix_env(tmp_path)
+    (tmp_path / "ifd.nix").write_text(
+        """
+        let
+          gen = derivation {
+            name = "gen";
+            system = builtins.currentSystem;
+            builder = "/bin/sh";
+            args = [ "-c" "echo '\\"from-ifd\\"' > $out" ];
+          };
+        in {
+          job = derivation {
+            name = import gen;
+            system = builtins.currentSystem;
+            builder = "/bin/sh";
+            args = [ "-c" ": > $out" ];
+          };
+        }
+        """
+    )
+
+    res = subprocess.run(
+        [
+            str(BIN),
+            "--gc-roots-dir",
+            str(tmp_path / "gc"),
+            *_HERMETIC_NIX_OPTS,
+            "--workers",
+            "1",
+            "--option",
+            "allow-import-from-derivation",
+            "true",
+            "--eval-store",
+            str(tmp_path / "eval"),
+            str(tmp_path / "ifd.nix"),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr
+    jobs = [json.loads(line) for line in res.stdout.splitlines() if line]
+    assert len(jobs) == 1
+    assert "error" not in jobs[0], jobs[0]["error"]
+    assert jobs[0]["name"] == "from-ifd"
+    # A local eval store could build itself; tarmac:// or ssh-ng:// cannot.
+    assert list((tmp_path / "store").glob("*-gen")), "IFD was not built in --store"
+
+
 def test_worker_log_format_survives_fork(tmp_path: Path) -> None:
     env = _hermetic_nix_env(tmp_path)
     assets = TEST_ROOT.joinpath("assets")

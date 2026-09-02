@@ -423,7 +423,8 @@ auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
 auto prefetchFlake(MyArgs &args) -> std::optional<std::string> {
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
     auto state = nix::make_ref<nix::EvalState>(
-        args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings);
+        args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings,
+        nix_eval_jobs::openStore().get_ptr());
     auto [flakeRef, fragment, outputSpec] =
         nix::parseFlakeRefWithFragmentAndExtendedOutputsSpec(
             nix::fetchSettings, args.releaseExpr,
@@ -456,7 +457,8 @@ void worker(
 
     auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
     auto state = nix::make_ref<nix::EvalState>(
-        args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings);
+        args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings,
+        nix_eval_jobs::openStore().get_ptr());
     nix::Bindings &autoArgs = *args.getAutoArgs(*state);
 
     Evaluator evaluator{
