@@ -180,3 +180,10 @@ above the limit momentarily before the worker process exits.
 
 Overall, tuning these options can help you optimize the performance and memory
 usage of nix-eval-jobs to better fit your system and evaluation needs.
+
+## Making a release
+
+Versions follow `<nix major.minor>.<revision>`. From an up-to-date `main` run
+`./dev/create-release.sh` (or `./dev/create-release.sh 0` after bumping Nix). It
+bumps `revision` in `default.nix`, merges it via PR, tags and publishes the
+GitHub release.
