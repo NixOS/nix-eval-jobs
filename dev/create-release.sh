@@ -63,7 +63,7 @@ pr_url=$(gh pr create \
   --head "release-${version}" \
   --title "Release ${version}" \
   --body "Release ${version} of nix-eval-jobs")
-gh pr merge --repo "$repo" "$pr_url" --auto --merge --delete-branch
+gh pr merge --repo "$repo" "$pr_url" --auto --merge
 git checkout main
 
 while [[ "$(gh pr view --repo "$repo" "$pr_url" --json state -q .state)" != "MERGED" ]]; do
