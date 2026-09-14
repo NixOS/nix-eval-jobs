@@ -30,7 +30,9 @@ in
     (lib.hiPrio pkgs.llvmPackages.clang-tools)
   ];
 
-  shellHook = lib.optionalString (stdenv.isLinux && nixComponents.nix-everything ? debug) ''
-    export NIX_DEBUG_INFO_DIRS="${pkgs.curl.debug}/lib/debug:${nixComponents.nix-everything.debug}/lib/debug''${NIX_DEBUG_INFO_DIRS:+:$NIX_DEBUG_INFO_DIRS}"
-  '';
+  shellHook =
+    lib.optionalString (stdenv.hostPlatform.isLinux && nixComponents.nix-everything ? debug)
+      ''
+        export NIX_DEBUG_INFO_DIRS="${pkgs.curl.debug}/lib/debug:${nixComponents.nix-everything.debug}/lib/debug''${NIX_DEBUG_INFO_DIRS:+:$NIX_DEBUG_INFO_DIRS}"
+      '';
 }
