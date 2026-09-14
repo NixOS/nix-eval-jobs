@@ -6,7 +6,7 @@
 }:
 
 let
-  revision = "2";
+  revision = "3";
 in
 stdenv.mkDerivation {
   pname = "nix-eval-jobs";
