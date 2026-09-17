@@ -1044,10 +1044,11 @@ def test_workers_do_not_race_flake_fetch(tmp_path: Path) -> None:
         ],
         env=env,
         text=True,
-        check=True,
+        check=False,
         capture_output=True,
     )
-    assert len(res.stdout.splitlines()) == 8
+    assert res.returncode == 0, res.stderr
+    assert len(res.stdout.splitlines()) == 8, res.stderr
     assert "waiting for another Nix process" not in res.stderr, res.stderr
 
 
