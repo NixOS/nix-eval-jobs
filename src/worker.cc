@@ -421,10 +421,12 @@ auto processJobRequest(Evaluator &evaluator, LineReader &fromReader,
 } // namespace
 
 auto prefetchFlake(MyArgs &args) -> std::optional<std::string> {
-    auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
+    auto store = nix::openStore();
+    auto evalStore =
+        args.evalStoreUrl ? nix_eval_jobs::openStore(args.evalStoreUrl) : store;
     auto state = nix::make_ref<nix::EvalState>(
         args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings,
-        nix_eval_jobs::openStore().get_ptr());
+        store.get_ptr());
     auto [flakeRef, fragment, outputSpec] =
         nix::parseFlakeRefWithFragmentAndExtendedOutputsSpec(
             nix::fetchSettings, args.releaseExpr,
@@ -455,10 +457,14 @@ void worker(
     auto config = nlohmann::json::parse(*configLine);
     args.lockedFlakeAttrs = config.value("lockedFlake", "");
 
-    auto evalStore = nix_eval_jobs::openStore(args.evalStoreUrl);
+    // Like nix::EvalCommand: reuse the same Store object unless a distinct
+    // --eval-store is given; opening the local store twice crashed (#480).
+    auto store = nix::openStore();
+    auto evalStore =
+        args.evalStoreUrl ? nix_eval_jobs::openStore(args.evalStoreUrl) : store;
     auto state = nix::make_ref<nix::EvalState>(
         args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings,
-        nix_eval_jobs::openStore().get_ptr());
+        store.get_ptr());
     nix::Bindings &autoArgs = *args.getAutoArgs(*state);
 
     Evaluator evaluator{
