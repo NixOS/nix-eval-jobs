@@ -29,6 +29,7 @@ class MyArgs : virtual public nix::MixEvalArgs,
     bool impure = false;
     bool forceRecurse = false;
     bool checkCacheStatus = false;
+    bool shallowCacheStatus = false;
     bool showInputDrvs = false;
     bool constituents = false;
     bool noInstantiate = false;

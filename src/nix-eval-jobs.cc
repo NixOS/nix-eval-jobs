@@ -520,7 +520,8 @@ auto makeCacheStatusResolver(const MyArgs &args, nix::Sync<JobMap> &jobs)
     }
     return std::optional<CacheStatusResolver>(
         std::in_place, nix_eval_jobs::openStore(args.evalStoreUrl),
-        nix_eval_jobs::openStore(), [&jobs](const Response &response) -> void {
+        nix_eval_jobs::openStore(), args.shallowCacheStatus,
+        [&jobs](const Response &response) -> void {
             emitResponse(jobs, response);
         });
 }
@@ -533,6 +534,7 @@ void validateIncompatibleFlags(const MyArgs &args) {
     const std::vector<std::pair<bool, std::string_view>> flagChecks = {
         {args.showInputDrvs, "--show-input-drvs"},
         {args.checkCacheStatus, "--check-cache-status"},
+        {args.shallowCacheStatus, "--shallow-cache-status"},
         {args.constituents, "--constituents"}};
 
     std::string incompatibleFlags;

@@ -96,6 +96,19 @@ def test_query_cache_status() -> None:
         assert "neededSubstitutes" in result
 
 
+def test_shallow_cache_status() -> None:
+    results = common_test(
+        ["--flake", ".#hydraJobs", "--check-cache-status", "--shallow-cache-status"]
+    )
+    for result in results:
+        assert "isCached" in result
+        assert "cacheStatus" in result
+        # Shallow check does not compute neededBuilds or neededSubstitutes for unbuilt derivations
+        if result["cacheStatus"] == "notBuilt":
+            assert result["neededBuilds"] == []
+            assert result["neededSubstitutes"] == []
+
+
 def test_expression() -> None:
     results = common_test(["ci.nix"])
     for result in results:
