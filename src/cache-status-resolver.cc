@@ -37,9 +37,9 @@ void sortPaths(std::vector<nix::StorePath> &paths) {
 
 CacheStatusResolver::CacheStatusResolver(nix::ref<nix::Store> evalStore,
                                          nix::ref<nix::Store> buildStore,
-                                         Sink sink)
+                                         bool shallowCacheStatus, Sink sink)
     : evalStore(std::move(evalStore)), buildStore(std::move(buildStore)),
-      sink(std::move(sink)) {
+      shallowCacheStatus(shallowCacheStatus), sink(std::move(sink)) {
     worker = std::thread([this]() -> void { run(); });
 }
 
@@ -325,7 +325,16 @@ auto CacheStatusResolver::tryResolve(Drv &drv) -> bool {
     }
 
     /* Slow path: Something needs building.
-     * Like Store::queryMissing walk the input graph for the per-derivation
+     * When shallowCacheStatus is enabled, we only need to report that the
+     * derivation itself is NotBuilt without recursively computing the
+     * dependency breakdown.
+     */
+    if (shallowCacheStatus) {
+        drv.cacheStatus = Drv::CacheStatus::NotBuilt;
+        return true;
+    }
+
+    /* Like Store::queryMissing walk the input graph for the per-derivation
      * breakdown (which inputs will build, which come from a cache)
      */
     Traversal traversal;

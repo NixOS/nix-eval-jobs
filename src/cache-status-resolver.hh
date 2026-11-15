@@ -34,7 +34,8 @@ class CacheStatusResolver {
      * substitutability are resolved against the build store, the eval
      * store never holds outputs. */
     CacheStatusResolver(nix::ref<nix::Store> evalStore,
-                        nix::ref<nix::Store> buildStore, Sink sink);
+                        nix::ref<nix::Store> buildStore,
+                        bool shallowCacheStatus, Sink sink);
     ~CacheStatusResolver();
 
     CacheStatusResolver(const CacheStatusResolver &) = delete;
@@ -82,6 +83,7 @@ class CacheStatusResolver {
 
     nix::ref<nix::Store> evalStore;
     nix::ref<nix::Store> buildStore;
+    bool shallowCacheStatus = false;
     Sink sink;
 
     std::mutex mutex;

@@ -137,6 +137,15 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
     });
 
     addFlag({
+        .longName = "shallow-cache-status",
+        .description =
+            "When checking cache status, only check whether the derivation's "
+            "own output paths are cached. If unbuilt, do not traverse input "
+            "derivations to compute neededBuilds or neededSubstitutes.",
+        .handler = {&shallowCacheStatus, true},
+    });
+
+    addFlag({
         .longName = "show-input-drvs",
         .description =
             "Show input derivations in the output for each derivation. "
